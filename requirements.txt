@@ -25,6 +25,7 @@ nvidia-nvjitlink-cu12==12.9.86
 nvidia-nvshmem-cu12==3.3.9
 opt_einsum==3.4.0
 PyOpenGL==3.1.9
+pyyaml==6.0.2
 scipy==1.16.0
 trimesh==4.7.1
 typing_extensions==4.14.1
