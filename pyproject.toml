@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dair_exploration"
+version = "0.0.1"
+authors = [
+  { name="Ethan K. Gordon", email="ethankg@seas.upenn.edu" },
+]
+dynamic = ["dependencies"]
+description = "Tactile Active Exploration"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/dairlab/dair_exploration"
+Issues = "https://github.com/dairlab/dair_exploration/issues"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
