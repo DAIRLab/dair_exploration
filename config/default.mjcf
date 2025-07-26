@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mujoco model="default">
+  <option timestep="0.033" />
   <compiler angle="radian"/>
   <visual>
     <quality shadowsize="4096"/>
@@ -18,30 +19,73 @@
 
     <camera name="closeup" pos=".4 -.4 .4" xyaxes="1 1 0 -1 1 3" resolution="640 480"/>
 
-    <body name="spherebot1" pos="0 0 0" gravcomp="1">
-      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
-      <geom name="spherebot1-geom" type="sphere" size="0.01" rgba="0.1 0.9 0.1 1.0" />
-      <joint name="spherebot1-x" type="slide" axis="1 0 0" ref="0.2"/>
-      <joint name="spherebot1-y" type="slide" axis="0 1 0" ref="0"/>
-      <joint name="spherebot1-z" type="slide" axis="0 0 1" ref="0.2" />
-    </body>
-
-    <body name="spherebot2" pos="0 0 0" gravcomp="1">
-      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
-      <geom name="spherebot2-geom" type="sphere" size="0.01" rgba="0.1 0.5 0.1 1.0" />
-      <joint name="spherebot2-x" type="slide" axis="1 0 0" ref="-0.2"/>
-      <joint name="spherebot2-y" type="slide" axis="0 1 0" ref="0"/>
-      <joint name="spherebot2-z" type="slide" axis="0 0 1" ref="0.2"/>
-    </body>
-
+    <!-- Body initial pose, initial guess -->
     <body name="object" pos="0 0 0.1">
-      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
-      <geom name="object-geom" type="box" size="0.1 0.1 0.1" rgba="0.9 0.1 0.1 1.0" />
       <freejoint />
+
+      <!-- Body Inertia properties, initial guess -->
+      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
+
+      <!-- Body geometry, initial guess -->
+      <geom name="object-geom" type="box" size="0.1 0.1 0.1" rgba="0.9 0.1 0.1 1.0" />
+    </body>
+
+    <body name="spherebot1" pos="0.1 0 0.1" gravcomp="1">
+      <!-- Robot Mass, COM, Inertia -->
+      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
+
+      <!-- Robot has 3x prismatic joints (rotation doesn't matter)-->
+      <joint name="spherebot1-x" type="slide" axis="1 0 0" ref="0.1"/>
+      <joint name="spherebot1-y" type="slide" axis="0 1 0" ref="0"/>
+      <joint name="spherebot1-z" type="slide" axis="0 0 1" ref="0.1" />
+
+      <!-- Dummy node for force sensor -->
+      <body name="spherebot1-dummy">
+        <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
+        <geom name="spherebot1-geom" type="sphere" size="0.01" rgba="0.1 0.9 0.1 1.0" />
+        <site name="spherebot1-site" pos="0 0 0"/>
+      </body>
+    </body>
+
+    <body name="spherebot2" pos="-0.1 0 0.1" gravcomp="1">
+      <!-- Robot Mass, COM, Inertia -->
+      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
+      
+      <!-- Robot has 3x prismatic joints (rotation doesn't matter)-->
+      <joint name="spherebot2-x" type="slide" axis="1 0 0" ref="-0.1"/>
+      <joint name="spherebot2-y" type="slide" axis="0 1 0" ref="0"/>
+      <joint name="spherebot2-z" type="slide" axis="0 0 1" ref="0.1" />
+
+      <!-- Dummy node for force sensor -->
+      <body name="spherebot2-dummy">
+        <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
+        <geom name="spherebot2-geom" type="sphere" size="0.01" rgba="0.1 0.9 0.1 1.0" />
+        <site name="spherebot2-site" pos="0 0 0"/>
+      </body>
     </body>
   </worldbody>
 
+  <!-- Contact Sensors for 3D force in world frame -->
+  <!-- NOTE: despite what the docs say need to take -1*data.sensordata to get force on the robot -->
+  <!-- NOTE: mjx.step().sensordata has a 1-timestep lag relative to mj_step().sensordata -->
+  <sensor>
+    <force name="spherebot1-contact" site="spherebot1-site"/>
+    <force name="spherebot2-contact" site="spherebot2-site"/>
+  </sensor>
+
+  <!-- PD Controllers on both robot spheres -->
   <actuator>
-    <position joint="spherebot1-x"/>
+    <position joint="spherebot1-x" kp="20"/>
+    <position joint="spherebot1-y" kp="20"/>
+    <position joint="spherebot1-z" kp="20"/>
+    <position joint="spherebot2-x" kp="20"/>
+    <position joint="spherebot2-y" kp="20"/>
+    <position joint="spherebot2-z" kp="20"/>
+    <velocity joint="spherebot1-x" kv="10"/>
+    <velocity joint="spherebot1-y" kv="10"/>
+    <velocity joint="spherebot1-z" kv="10"/>
+    <velocity joint="spherebot2-x" kv="10"/>
+    <velocity joint="spherebot2-y" kv="10"/>
+    <velocity joint="spherebot2-z" kv="10"/>
   </actuator>
 </mujoco>
