@@ -42,3 +42,5 @@ six==1.17.0
 trimesh==4.7.1
 typing_extensions==4.14.1
 zipp==3.23.0
+black==25.1.0
+pylint==3.3.7
