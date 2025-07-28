@@ -38,13 +38,11 @@ class MJXMeshcatVisualizer:
     def __init__(self, model: mjx.Model, init_data: Optional[mjx.Data]) -> None:
         self._meshcat = StartMeshcat()
         self._model = model
-        if init_data is not None:
-            assert init_data.xpos.shape == (model.nbody, 3)
-            self._data = [init_data]
-        else:
-            self._data = [mjx.make_data(model)]
+        self._data = []
         self._trajs = None
-
+        self.update_visuals(
+            model, [mjx.make_data(model)] if init_data is None else [init_data], None
+        )
         self.reinit_tk()
 
     def update_visuals(
