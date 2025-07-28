@@ -17,7 +17,7 @@ import mujoco
 from mujoco import mjx
 from pydrake.geometry import StartMeshcat, Meshcat, Rgba
 from pydrake.geometry import Box, Sphere
-from scipy.spatial.transform import Rotation
+from jax.scipy.spatial.transform import Rotation
 
 
 class MJXMeshcatVisualizer:
@@ -40,16 +40,16 @@ class MJXMeshcatVisualizer:
         self._model = model
         self._data = []
         self._trajs = None
+        self.reinit_tk()
         self.update_visuals(
             model, [mjx.make_data(model)] if init_data is None else [init_data], None
         )
-        self.reinit_tk()
 
     def update_visuals(
         self,
         model: mjx.Model,
         data_trajectory: list[mjx.Data],
-        traj_overwrite: Optional[dict[str, list[tuple[jax.Array, Rotation]]]],
+        traj_overwrite: Optional[dict[str, list[tuple[jax.Array, Rotation]]]] = None,
     ):
         """Update local parameters used in update()"""
 
@@ -71,7 +71,8 @@ class MJXMeshcatVisualizer:
         self._model = model
         self._data = data_trajectory
         self._trajs = traj_overwrite
-        self.reinit_tk(float(len(self._data) - 1))
+        self._scale.configure(to=float(len(self._data) - 1))
+        self.update()
 
     def reinit_tk(self, new_val=0.0) -> None:
         """Reset scale range to new value"""
@@ -124,18 +125,15 @@ class MJXMeshcatVisualizer:
             rgba = Rgba(*(self._model.geom_rgba[geomid].tolist()))
             self._meshcat.SetObject("/" + name, shape, rgba)
 
-            # TODO: add overwrite
             if self._trajs is not None and name in self._trajs:
-                pass
+                pos = self._trajs[name][timestep][0]
+                rot = self._trajs[name][timestep][1].as_matrix()
+            else:
+                pos = data.xpos[bodyid]
+                rot = data.xmat[bodyid]
 
             ### Set Object Transform
-            transform = (
-                jnp.eye(4)
-                .at[:3, :3]
-                .set(data.xmat[bodyid])
-                .at[:3, 3]
-                .set(data.xpos[bodyid])
-            )
+            transform = jnp.eye(4).at[:3, :3].set(rot).at[:3, 3].set(pos)
             self._meshcat.SetTransform("/" + name, transform)
 
     def sweep(self, dt=0.033) -> None:

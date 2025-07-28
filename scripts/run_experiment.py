@@ -3,9 +3,10 @@
 Entry Point for Exploration Experiment
 """
 
-def main():
-	"""Entry Point"""
-	
 
-if __name__ == '__main__':
-	main()
+def main():
+    """Entry Point"""
+
+
+if __name__ == "__main__":
+    main()

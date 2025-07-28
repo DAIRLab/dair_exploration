@@ -5,6 +5,7 @@ drake==1.43.0
 etils==1.13.0
 fonttools==4.59.0
 fsspec==2025.7.0
+gitpython==3.1.45
 glfw==2.9.0
 importlib_resources==6.5.2
 jax==0.7.0
