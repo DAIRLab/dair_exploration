@@ -13,6 +13,7 @@ import time
 from typing import Any, Optional
 
 import gin
+import jax.numpy as jnp
 import lcm
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -38,15 +39,18 @@ class TrifingerLCMService:
     _raw_data: dict[str, list[Any]]
 
     _fingertip_geom_names: list[str]
+    _object_geom_name: str
     _traj_time_len: float
 
     def __init__(
         self,
         lcm_channels: dict[str, str],
         fingertip_geom_names: list[str],
+        object_geom_name: Optional[str] = None,
         traj_time_len: float = 2.0,
     ):
         self._fingertip_geom_names = fingertip_geom_names
+        self._object_geom_name = object_geom_name
         self._traj_time_len = traj_time_len
         self._raw_data = {"fingertip_pose": [], "densetact": [], "object_state": []}
 
@@ -67,14 +71,20 @@ class TrifingerLCMService:
         )
         self._lcm_subs["fingertips_target"] = (lcm_channels["fingertips_target"], None)
         for sub in self._lcm_subs.values():
-            sub[1].set_queue_capacity(
-                1
-            )  # to discard everything outside of the handle window
+            if sub[1] is not None:
+                sub[1].set_queue_capacity(
+                    1
+                )  # to discard everything outside of the handle window
 
     @property
     def fingertip_geom_names(self):
         """Fingertip body names"""
         return self._fingertip_geom_names
+
+    @property
+    def object_geom_name(self):
+        """Fingertip body names"""
+        return self._object_geom_name
 
     def sub_handler(self, channel: str, data: Any):
         """
@@ -94,7 +104,6 @@ class TrifingerLCMService:
     def execute_trajectory(
         self,
         target_state: np.ndarray,
-        object_geom_name: Optional[str] = None,
         pos_is_absolute: bool = True,
         no_data: bool = False,
     ) -> tuple[np.ndarray, dict[str, dict[str, np.ndarray]]]:
@@ -125,7 +134,7 @@ class TrifingerLCMService:
         command.targetVel[:] = target_state[len(command.targetPos) :]
 
         # Start with clear data
-        for data_list in self._raw_data:
+        for data_list in self._raw_data.values():
             data_list.clear()
 
         print(f"Sending Command at: {time.time()}")
@@ -136,7 +145,7 @@ class TrifingerLCMService:
         print(f"Finished at: {time.time()}")
         print(
             f"Collected {[len(data_list) for data_list in self._raw_data.values()]}"
-            + "samples."
+            + " samples."
         )
 
         # Return empty if not any force data
@@ -268,19 +277,22 @@ class TrifingerLCMService:
             fingertip_force_c[body_name] = force_c
 
         for body_name in self._fingertip_geom_names:
-            ret[body_name]["position"] = fingertip_pos_w[body_name]
-            ret[body_name]["velocity"] = fingertip_vel_w[body_name]
-            ret[body_name]["contact_force_C"] = fingertip_force_c[body_name]
-            ret[body_name]["contact_force_W"] = fingertip_force_w[body_name]
-            ret[body_name]["contact_normal_W"] = fingertip_normal_w[body_name]
+            ret[body_name]["position"] = jnp.array(fingertip_pos_w[body_name])
+            ret[body_name]["velocity"] = jnp.array(fingertip_vel_w[body_name])
+            ret[body_name]["contact_force_C"] = jnp.array(fingertip_force_c[body_name])
+            ret[body_name]["contact_force_W"] = jnp.array(fingertip_force_w[body_name])
+            ret[body_name]["contact_normal_W"] = jnp.array(
+                fingertip_normal_w[body_name]
+            )
 
         # Interp ground-truth object data
         if len(self._raw_data["object_state"]) > 0:
             obj_name = (
-                object_geom_name
-                if object_geom_name is not None
+                self._object_geom_name
+                if self._object_geom_name is not None
                 else self._raw_data["object_state"][0].object_name
             )
+            ret[obj_name] = {}
             # Position Interpolation
             num_positions = self._raw_data["object_state"][0].num_positions
             object_pos = np.array(
@@ -297,7 +309,7 @@ class TrifingerLCMService:
                 ]
             ).T
             assert object_pos_interp.shape == (len(densetact_time_s), num_positions)
-            ret[obj_name]["position"] = object_pos_interp
+            ret[obj_name]["position"] = jnp.array(object_pos_interp)
 
             # Velocity Interpolation
             num_velocities = self._raw_data["object_state"][0].num_velocities
@@ -315,10 +327,10 @@ class TrifingerLCMService:
                 ]
             ).T
             assert object_vel_interp.shape == (len(densetact_time_s), num_velocities)
-            ret[obj_name]["velocity"] = object_vel_interp
+            ret[obj_name]["velocity"] = jnp.array(object_vel_interp)
 
         # Return
-        return densetact_time_s, ret
+        return jnp.array(densetact_time_s), ret
 
 
 ## Action / Workspace Parameters
