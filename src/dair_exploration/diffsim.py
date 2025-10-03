@@ -9,6 +9,7 @@ from mujoco import mjx
 
 
 # Mujoco Utilities
+# pylint: disable=missing-function-docstring
 def bodyid_from_body_name(model: mjx.Model, name: str) -> int:
     return model.name_bodyadr.tolist().index(model.names.find(f"{name}\0".encode()))
 
@@ -49,8 +50,6 @@ def jit_step(model: mjx.Model, data: mjx.Data):
 
 
 ## Diff Sim
-
-
 def diffsim_overwrite(
     model: mjx.Model,
     init_data: mjx.Data,
@@ -107,7 +106,6 @@ def diffsim(
     Returns:
         list of new data objects from simulation
     """
-
     ret_list = [init_data]
 
     for timestep in range(ctrl.shape[0]):

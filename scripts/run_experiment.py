@@ -4,11 +4,10 @@ Entry Point for Exploration Experiment
 """
 
 import argparse
-import ipdb
+import pdb
 from typing import Optional
 
 import gin
-import jax
 import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
@@ -38,8 +37,7 @@ def main(
 
     # Create learnable system
     print("JIT Mujoco XLA Step...")
-    mj_model = mujoco.MjModel.from_xml_path(get_config(model_file))
-    mjx_model = mjx.put_model(mj_model)
+    mjx_model = mjx.put_model(mujoco.MjModel.from_xml_path(get_config(model_file)))
     mjx_init_data = mjx.make_data(mjx_model)
 
     # GUI Visualization
@@ -75,8 +73,8 @@ def main(
 
         elif command_char == "b":
             # pylint: disable-next=forgotten-debug-statement
-            # pdb.Pdb(nosigint=True).set_trace()
-            ipdb.set_trace()
+            pdb.Pdb(nosigint=True).set_trace()
+            # ipdb.set_trace()
 
         elif command_char == "e":
             ## Execute selected action

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 """Utility functions for File Operations"""
-
 import os
 
 import git

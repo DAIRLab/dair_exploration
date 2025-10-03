@@ -3,6 +3,7 @@
 """
 Test basic GUI visualization tools
 """
+import time
 
 import jax
 import jax.numpy as jnp
@@ -18,15 +19,19 @@ def test_gui():
     """GUI Test"""
     mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf"))
     mjx_model = mjx.put_model(mj_model)
-    print("Running initial sim compilation...")
+    print("Running initial sim compilation...", end="", flush=True)
     step_jit = jax.jit(mjx.step)
+    start = time.time()
     mjx_data = step_jit(mjx_model, mjx.make_data(mjx_model))
+    print(f"done in {time.time()-start}s")
     data_list = [mjx_data]
     print("Starting Meshcat...")
     vis = MJXMeshcatVisualizer(mjx_model, mjx_data)
-    print("Simulating 100 steps...")
+    print("Simulating 100 steps...", end="", flush=True)
+    start = time.time()
     for _ in range(100):
         data_list.append(step_jit(mjx_model, data_list[-1]))
+    print(f"done in {time.time()-start}s")
     print("Writing to Meshcat...")
     traj = {
         "true-geom": [

@@ -115,7 +115,7 @@ class TrifingerLCMService:
 
         Params:
             target_state: (finger_0q, finger_120q, finger_240q, finger_0v, finger_120v, finger_240v)
-            pos_is_absolute: whether to do a relative or absolute (w.r.t. world frame) motion (default: True)
+            pos_is_absolute: relative or absolute (w.r.t. world frame) motion (default: True)
             no_data: Run command but do not collect data (default: False)
 
         Returns:
@@ -123,7 +123,8 @@ class TrifingerLCMService:
         dict(fingertip/object_geom_names -> data_dict)
         data_dict has
             position (dtime, 3), velocity (dtime, 3),
-            if available: contact_force_C (dtime, 3), contact_force_W (dtime, 3), contact_normal_W (dtime, 3)
+            if available: contact_force_C (dtime, 3),
+                contact_force_W (dtime, 3), contact_normal_W (dtime, 3)
         """
         # pylint: disable=too-many-locals, too-many-statements
         command = lcmt_fingertips_target_kinematics()

@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""Utility functions for GUI visualizations (including Meshcat)
-
-The main contents of this file are as follows:
-
-        * A class to initatite a comparison visualization in Meshcat between the true and learned trajectory + geometry
-"""
+"""Utility functions for GUI visualizations (including Meshcat)"""
 
 import time
 from tkinter import Tk, Scale, DoubleVar
@@ -13,11 +8,13 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.spatial.transform import Rotation
 import mujoco
 from mujoco import mjx
-from pydrake.geometry import StartMeshcat, Meshcat, Rgba
-from pydrake.geometry import Box, Sphere
-from jax.scipy.spatial.transform import Rotation
+import meshcat
+from meshcat import geometry
+import numpy as np
+import trimesh
 
 
 class MJXMeshcatVisualizer:
@@ -25,7 +22,7 @@ class MJXMeshcatVisualizer:
     Meshcat Comparison Visualization
     """
 
-    _meshcat: Meshcat
+    _meshcat: meshcat.Visualizer
     _model: mjx.Model
     _data: list[mjx.Data]
     _trajs: Optional[dict[int, jax.Array]]
@@ -36,7 +33,8 @@ class MJXMeshcatVisualizer:
     _timestep: DoubleVar
 
     def __init__(self, model: mjx.Model, init_data: Optional[mjx.Data]) -> None:
-        self._meshcat = StartMeshcat()
+        self._meshcat = meshcat.Visualizer()
+        print(f"Started Meshcat server at: {self._meshcat.url()}")
         self._model = model
         self._data = []
         self._trajs = None
@@ -106,11 +104,25 @@ class MJXMeshcatVisualizer:
             shape = None
             if self._model.geom_type[geomid] == mujoco.mjtGeom.mjGEOM_BOX:
                 # geom_size is half-lengths
-                shape = Box(*((2.0 * self._model.geom_size[geomid]).tolist()))
+                shape = geometry.Box((2.0 * self._model.geom_size[geomid]).tolist())
             elif self._model.geom_type[geomid] == mujoco.mjtGeom.mjGEOM_SPHERE:
                 # geom_size is radius
-                shape = Sphere(float(self._model.geom_size[geomid][0]))
-            # TODO: Add ConvexMesh visualization
+                shape = geometry.Sphere(float(self._model.geom_size[geomid][0]))
+            elif self._model.geom_type[geomid] == mujoco.mjtGeom.mjGEOM_MESH:
+                # Get convex hull using trimesh
+                trimesh_mesh = trimesh.Trimesh(
+                    vertices=np.asarray(
+                        Rotation.from_quat(jnp.roll(self._model.mesh_quat, -1)).apply(
+                            # Mujoco wants us to use _impl
+                            # pylint: disable-next=protected-access
+                            self._model._impl.mesh_convex[0].vert
+                        )
+                        + self._model.mesh_pos
+                    )
+                ).convex_hull
+                shape = geometry.TriangularMeshGeometry(
+                    vertices=trimesh_mesh.vertices, faces=trimesh_mesh.faces
+                )
             if shape is None:
                 continue
             ### Other shape types not supported yet
@@ -122,8 +134,15 @@ class MJXMeshcatVisualizer:
                     nameadr : self._model.names.find(b"\x00", nameadr)
                 ].decode()
             )
-            rgba = Rgba(*(self._model.geom_rgba[geomid].tolist()))
-            self._meshcat.SetObject("/" + name, shape, rgba)
+            rgba = self._model.geom_rgba[geomid].tolist()
+            color = int(
+                f"0x{int(rgba[0]*255):02x}{int(rgba[1]*255):02x}{int(rgba[2]*255):02x}",
+                16,
+            )
+            opacity = rgba[3]
+            self._meshcat[name].set_object(
+                shape, geometry.MeshLambertMaterial(color=color, opacity=opacity)
+            )
 
             if self._trajs is not None and name in self._trajs:
                 pos = self._trajs[name][timestep][0]
@@ -134,7 +153,7 @@ class MJXMeshcatVisualizer:
 
             ### Set Object Transform
             transform = jnp.eye(4).at[:3, :3].set(rot).at[:3, 3].set(pos)
-            self._meshcat.SetTransform("/" + name, transform)
+            self._meshcat[name].set_transform(np.asarray(transform).astype(np.float64))
 
     def sweep(self, dt=0.033) -> None:
         """

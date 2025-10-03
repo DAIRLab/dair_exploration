@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "dair_exploration"
@@ -8,8 +8,7 @@ version = "0.0.1"
 authors = [
   { name="Ethan K. Gordon", email="ethankg@seas.upenn.edu" },
 ]
-dynamic = ["dependencies"]
-description = "Tactile Active Exploration"
+description = "Tactile active exploration for dynamic rigid bodies"
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
@@ -18,10 +17,27 @@ classifiers = [
 ]
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
+dependencies = [
+  "jax[cuda13]",
+  "mujoco-mjx",
+  "gin-config", # Gin Configuration
+  "warp-lang", # GPU Acceleration for Mujoco
+  "gitpython", # file_utils to identify repository (EXAMPLES ONLY)
+  "meshcat", # Visualization
+  "lcm", # Communicating with robot/simulator
+]
+
+[project.optional-dependencies]
+dev = [
+  "black", # Initial Linter
+  "pylint", # Final Linter
+]
 
 [project.urls]
 Homepage = "https://github.com/dairlab/dair_exploration"
 Issues = "https://github.com/dairlab/dair_exploration/issues"
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+### Linting
+[tool.pylint.main]
+ignore-paths = ["^src/dair_exploration/lcmtypes/.*$"]
+extension-pkg-allow-list = ["mujoco"]

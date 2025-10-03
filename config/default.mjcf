@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <mujoco model="default">
-  <option timestep="0.033" />
+  <option timestep="0.033">
+    <flag multiccd="enable"/>
+  </option>
   <compiler angle="radian"/>
   <visual>
     <quality shadowsize="4096"/>
@@ -10,6 +12,7 @@
     <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="512"/>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .1 .1" rgb2=".2 .2 .2"/>
     <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".05"/>
+    <mesh name="tetrahedron" vertex="0 0 0  0.05 0 0  0 0.05 0  0 0 0.05"/>
   </asset>
 
   <worldbody>
@@ -18,32 +21,29 @@
     <light dir="-.2 1 -.4" diffuse=".9 .9 .9" specular="0.6 0.9 0.6" pos="2 -5 6" cutoff="70"/>
 
     <camera name="closeup" pos=".4 -.4 .4" xyaxes="1 1 0 -1 1 3" resolution="640 480"/>
-
-    <!-- True geometry (for experiments) -->
+    <!--
     <body name="true" pos="0 0 0.0325" gravcomp="1">
+      <freejoint />
+      <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
+      <geom name="true-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.8 0.0 0.0 0.3" contype="0" conaffinity="0" />
+    </body>
+    -->
+
+    <!-- Body initial pose, initial guess -->
+    <body name="object" pos="0 0 0.05">
       <freejoint />
 
       <!-- Body Inertia properties, initial guess -->
       <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
 
       <!-- Body geometry, initial guess -->
-      <geom name="true-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.8 0.0 0.0 0.3" contype="0" conaffinity="0" />
-    </body>
-
-    <!-- Body initial pose, initial guess -->
-    <body name="object" pos="0 0 0.0325">
-      <freejoint />
-
-      <!-- Body Inertia properties, initial guess -->
-      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
-
-      <!-- Body geometry, initial guess -->
-      <geom name="object-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />
+      <!--<geom name="object-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />-->
+      <geom name="object-geom" type="mesh" mesh="tetrahedron" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />
     </body>
 
     <body name="spherebot1" pos="0.1 0 0.05" gravcomp="1">
       <!-- Robot Mass, COM, Inertia -->
-      <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
+      <inertial diaginertia="1 1 1" mass="0.2" pos="0 0 0"/>
 
       <!-- Robot has 3x prismatic joints (rotation doesn't matter)-->
       <joint name="spherebot1-x" type="slide" axis="1 0 0" ref="0.1"/>
@@ -59,15 +59,12 @@
     </body>
 
     <body name="spherebot2" pos="-0.1 0 0.05" gravcomp="1">
-      <!-- Robot Mass, COM, Inertia -->
-      <inertial diaginertia="1 1 1" mass="1" pos="0 0 0"/>
+      <inertial diaginertia="1 1 1" mass="0.2" pos="0 0 0"/>
       
-      <!-- Robot has 3x prismatic joints (rotation doesn't matter)-->
       <joint name="spherebot2-x" type="slide" axis="1 0 0" ref="-0.1"/>
       <joint name="spherebot2-y" type="slide" axis="0 1 0" ref="0"/>
       <joint name="spherebot2-z" type="slide" axis="0 0 1" ref="0.05" />
 
-      <!-- Dummy node for force sensor -->
       <body name="spherebot2-dummy">
         <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
         <geom name="spherebot2-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
@@ -99,12 +96,12 @@
     <position joint="spherebot1-x" kp="20"/>
     <position joint="spherebot1-y" kp="20"/>
     <position joint="spherebot1-z" kp="20"/>
-    <position joint="spherebot2-x" kp="20"/>
-    <position joint="spherebot2-y" kp="20"/>
-    <position joint="spherebot2-z" kp="20"/>
     <velocity joint="spherebot1-x" kv="10"/>
     <velocity joint="spherebot1-y" kv="10"/>
     <velocity joint="spherebot1-z" kv="10"/>
+    <position joint="spherebot2-x" kp="20"/>
+    <position joint="spherebot2-y" kp="20"/>
+    <position joint="spherebot2-z" kp="20"/>
     <velocity joint="spherebot2-x" kv="10"/>
     <velocity joint="spherebot2-y" kv="10"/>
     <velocity joint="spherebot2-z" kv="10"/>
