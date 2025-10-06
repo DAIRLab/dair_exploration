@@ -37,8 +37,8 @@
       <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
 
       <!-- Body geometry, initial guess -->
-      <!--<geom name="object-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />-->
-      <geom name="object-geom" type="mesh" mesh="tetrahedron" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />
+      <geom name="object-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" margin="2"/>
+      <!--<geom name="object-geom" type="mesh" mesh="tetrahedron" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" /> -->
     </body>
 
     <body name="spherebot1" pos="0.1 0 0.05" gravcomp="1">
@@ -53,7 +53,7 @@
       <!-- Dummy node for force sensor -->
       <body name="spherebot1-dummy">
         <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
-        <geom name="spherebot1-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
+        <geom name="spherebot1-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" margin="2" />
         <site name="spherebot1-site" pos="0 0 0"/>
       </body>
     </body>
@@ -67,7 +67,7 @@
 
       <body name="spherebot2-dummy">
         <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
-        <geom name="spherebot2-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
+        <geom name="spherebot2-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" margin="2" />
         <site name="spherebot2-site" pos="0 0 0"/>
       </body>
     </body>
@@ -81,7 +81,7 @@
     <force name="spherebot2-contact" site="spherebot2-site"/>
   </sensor>
 
-  <!-- NOTE: need to edit mujoco/mjx/convex_collision.py, line ~317, to reveal distance -->
+  <!-- NOTE: need to edit mujoco/mjx/collision_convex.py, line ~317, to reveal distance -->
   <!-- https://github.com/google-deepmind/mujoco/blob/a04e0385e45f3ff4c15d4e4c152e2564a8b5e643/mjx/mujoco/mjx/_src/collision_convex.py#L317 -->
   <!-- Change to: `dist = d - sphere.size[0]` -->
 <!--   <contact>
