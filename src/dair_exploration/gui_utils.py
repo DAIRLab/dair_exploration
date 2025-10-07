@@ -162,6 +162,8 @@ class MJXMeshcatVisualizer:
         end = int(self._scale.config()["to"][-1])
 
         for timestep in range(end):
+            start = time.perf_counter()
             self._timestep.set(timestep)
             self.update()
-            time.sleep(dt)
+            while time.perf_counter() - start < dt:
+                pass
