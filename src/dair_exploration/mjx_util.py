@@ -7,6 +7,7 @@ Utilities for Mujoco XLA / JAX
 import jax
 
 from mujoco import mjx
+import numpy as np
 
 
 ## Naming Utilities
@@ -41,6 +42,40 @@ def qveladr_from_geom_name(model: mjx.Model, name: str) -> int:
     return qveladr_from_bodyid(
         model, bodyid_from_geomid(model, geomid_from_geom_name(model, name))
     )
+
+
+def qposidx_from_geom_name(model: mjx.Model, name: str) -> int:
+    bodyid = bodyid_from_geomid(model, geomid_from_geom_name(model, name))
+    qposids = []
+    # Loop through all joints in body
+    for jntid in range(
+        model.body_jntadr[bodyid], model.body_jntadr[bodyid] + model.body_jntnum[bodyid]
+    ):
+        nq = (
+            1 if model.jnt_type[jntid] > 1 else (4 if model.jnt_type[jntid] == 1 else 7)
+        )
+        qposids.extend(
+            list(range(model.jnt_qposadr[jntid], model.jnt_qposadr[jntid] + nq))
+        )
+
+    return np.array(qposids)
+
+
+def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
+    bodyid = bodyid_from_geomid(model, geomid_from_geom_name(model, name))
+    qvelids = []
+    # Loop through all joints in body
+    for jntid in range(
+        model.body_jntadr[bodyid], model.body_jntadr[bodyid] + model.body_jntnum[bodyid]
+    ):
+        nv = (
+            1 if model.jnt_type[jntid] > 1 else (3 if model.jnt_type[jntid] == 1 else 6)
+        )
+        qvelids.extend(
+            list(range(model.jnt_dofadr[jntid], model.jnt_dofadr[jntid] + nv))
+        )
+
+    return np.array(qvelids)
 
 
 # pylint: enable=missing-function-docstring
@@ -94,19 +129,11 @@ def write_params_to_model(
                 )
     return model
 
-
 ## Compiled base functions
 @jax.jit
 def jit_step(model: mjx.Model, data: mjx.Data):
     """Simulation Step"""
     return mjx.step(model, data)
-
-
-@jax.jit
-@jax.vmap(in_axes=(None, 0))
-def jit_vmap_forward(model: mjx.Model, data: mjx.Data):
-    """Simulation Step"""
-    return mjx.forward(model, data)
 
 
 ## Diff Sim
