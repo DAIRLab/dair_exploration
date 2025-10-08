@@ -15,8 +15,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from dair_exploration import diffsim
-from dair_exploration.file_utils import get_config
-from dair_exploration.gui_utils import MJXMeshcatVisualizer
+from dair_exploration.file_util import get_config
+from dair_exploration.gui_util import MJXMeshcatVisualizer
 from dair_exploration.trifinger_utils import (
     TrifingerLCMService,
     sample_action,

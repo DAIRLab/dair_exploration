@@ -81,6 +81,30 @@ def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
 # pylint: enable=missing-function-docstring
 
 
+def contactids_from_collision_geoms(
+    base_model: mjx.Model,
+    base_data: mjx.Data,
+    sensor_geoms: list[str],
+    object_geoms: list[str],
+) -> np.ndarray:
+    """Return list of contact ids that correspond with a sensor contacting an object"""
+    sensor_geomids = [geomid_from_geom_name(base_model, name) for name in sensor_geoms]
+    object_geomids = [geomid_from_geom_name(base_model, name) for name in object_geoms]
+
+    return np.where(
+        np.logical_or(
+            np.logical_and(
+                np.isin(base_data._impl.contact.geom1, sensor_geomids),
+                np.isin(base_data._impl.contact.geom2, object_geomids),
+            ),
+            np.logical_and(
+                np.isin(base_data._impl.contact.geom1, object_geomids),
+                np.isin(base_data._impl.contact.geom2, sensor_geomids),
+            ),
+        ),
+    )[0]
+
+
 ## Parameter Utilities
 def populate_parameter_dict(base_model: mjx.Model, param_names: dict[str, list[str]]):
     """
@@ -111,29 +135,62 @@ def populate_parameter_dict(base_model: mjx.Model, param_names: dict[str, list[s
 
 def write_params_to_model(
     base_model: mjx.Model, params: dict[str, dict[str, jax.Array]]
-):
+) -> mjx.Model:
     """Returns a model with the parameters replaced."""
     model = base_model
     for geom_name in params.keys():
         geomid = geomid_from_geom_name(base_model, geom_name)
-        for param_name, param in params[geom_name]:
+        for param_name, param in params[geom_name].items():
             if param_name == "size":
-                model.geom_size = model.geom_size.at[geomid].set(param)
+                model = model.replace(geom_size=model.geom_size.at[geomid].set(param))
             elif param_name == "friction":
-                model.geom_friction = model.geom_friction.at[geomid].set(param)
+                model = model.replace(
+                    geom_friction=model.geom_friction.at[geomid].set(param)
+                )
             elif param_name == "friction.sliding":
-                model.geom_friction = model.geom_friction.at[geomid, 0].set(param)
+                model = model.replace(
+                    geom_friction=model.geom_friction.at[geomid, 0].set(param)
+                )
             else:
                 raise NotImplementedError(
                     f"No implementation for parameter {param_name}"
                 )
     return model
 
+
+def write_qpos_to_data(
+    base_model: mjx.Model, base_data: mjx.Data, traj_qpos: dict[str, jax.Array]
+) -> mjx.Data:
+    ret_data = base_data
+    for key, val in traj_qpos.items():
+        ret_data = ret_data.replace(
+            qpos=ret_data.qpos.at[qposidx_from_geom_name(base_model, key)].set(val)
+        )
+    return base_data
+
+
+def write_qvel_to_data(
+    base_model: mjx.Model, base_data: mjx.Data, traj_qvel: dict[str, jax.Array]
+) -> mjx.Data:
+    ret_data = base_data
+    for key, val in traj_qvel.items():
+        ret_data = ret_data.replace(
+            qvel=ret_data.qvel.at[qvelidx_from_geom_name(base_model, key)].set(val)
+        )
+    return base_data
+
+
 ## Compiled base functions
 @jax.jit
 def jit_step(model: mjx.Model, data: mjx.Data):
     """Simulation Step"""
     return mjx.step(model, data)
+
+
+@jax.jit
+def jit_forward(model: mjx.Model, data: mjx.Data):
+    """Simulation Step"""
+    return mjx.forward(model, data)
 
 
 ## Diff Sim
@@ -180,6 +237,12 @@ def diffsim_overwrite(
     return ret_list[1:]
 
 
+def data_unstack(data: mjx.Data) -> list[mjx.Data]:
+    leaves, treedef = jax.tree.flatten(data)
+    return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
+
+
+@jax.jit
 def diffsim(
     model: mjx.Model,
     init_data: mjx.Data,
@@ -193,9 +256,12 @@ def diffsim(
     Returns:
         list of new data objects from simulation
     """
-    ret_list = [init_data]
 
-    for timestep in range(ctrl.shape[0]):
-        ret_list.append(jit_step(model, ret_list[-1].replace(ctrl=ctrl[timestep])))
+    def _sim_step(carry_data, ctrl):
+        """Inner sim step"""
+        ret_data = jit_step(model, carry_data.replace(ctrl=ctrl))
+        return (ret_data, ret_data)
 
-    return ret_list[1:]
+    _, data_stacked = jax.lax.scan(_sim_step, init_data, ctrl)
+
+    return data_stacked
