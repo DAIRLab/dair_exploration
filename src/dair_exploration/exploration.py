@@ -70,11 +70,63 @@ def expected_info(
     data_stacked = mjx_util.diffsim(base_model, data_current, ctrl)
 
     # Get Outputs (unnecessary)
-    # outputs = jit_outputs(params, data_stacked.qpos, data_stacked, base_model, contact_ids)
+    outputs = jit_outputs(
+        params, data_stacked.qpos, data_stacked, base_model, contact_ids
+    )
 
     # Get Jacobian w.r.t. outputs
     output_jacs = jit_jac_outputs(
         params, data_stacked.qpos, data_stacked, base_model, contact_ids
     )
+    qpos_keys = np.concatenate(
+        [
+            mjx_util.qposidx_from_geom_name(base_model, key)
+            for key in traj_qpos_params.keys()
+        ]
+    )
 
-    return output_jacs
+    ## Handle Phi
+    phi_jacs = output_jacs["phi"]
+    # Handle w.r.t. state, assume jac == identity, note phi_jacs[1] is block diagonal on timesteps
+    phi_qpos_jac = jnp.sum(phi_jacs[1][..., qpos_keys], axis=-2)
+    # Handle w.r.t. geometry / physics params
+    phi_geom_jac = jnp.concat(jax.tree.flatten(phi_jacs[0])[0], axis=-1)
+
+    # Create multiplier
+    # TODO: make hyperparameters
+    phi_nominal = 0.005  # m
+    phi_ci = 0.05  # Confidence Interval
+    phi_alpha = np.log(np.reciprocal(phi_ci) - 1.0) / phi_nominal
+    contact_bool = jax.nn.sigmoid(
+        -phi_alpha * outputs["phi"]
+    )  # simgoid = 1/(1+exp(-x))
+    phi_mult = contact_bool - jnp.square(
+        contact_bool
+    )  # exp(x)/(1+exp(x))^2 = sigmoid(-x) - sigmoid(-x)^2
+
+    # Create phi info
+    phi_param_jac = jnp.concat([phi_qpos_jac, phi_geom_jac], axis=-1)
+    phi_param_flat_jac = phi_param_jac.reshape(-1, phi_param_jac.shape[-1])
+    phi_info = phi_param_flat_jac.T @ (phi_mult.reshape(-1, 1) * phi_param_flat_jac)
+
+    ## Handle Normal
+    normal_jacs = output_jacs["normal"]
+    # Handle w.r.t. state, assume jac == identity, note phi_jacs[1] is block diagonal on timesteps
+    normal_qpos_jac = jnp.sum(normal_jacs[1][..., qpos_keys], axis=-2)
+    # Handle w.r.t. geometry / physics params
+    normal_geom_jac = jnp.concat(jax.tree.flatten(normal_jacs[0])[0], axis=-1)
+
+    # Create multiplier
+    # TODO: make hyperparameters
+    normal_var = 0.01519224261
+    normal_mult = contact_bool * jnp.reciprocal(normal_var)
+
+    # Create normal info
+    normal_param_jac = jnp.concat([normal_qpos_jac, normal_geom_jac], axis=-1)
+    normal_param_flat_jac = normal_param_jac.reshape(-1, normal_param_jac.shape[-1])
+    normal_info = normal_param_flat_jac.T @ (
+        jnp.repeat(normal_mult[..., None], 3, axis=-1).reshape(-1, 1)
+        * normal_param_flat_jac
+    )
+
+    return phi_info + normal_info

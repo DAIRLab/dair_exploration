@@ -60,6 +60,8 @@ def test_exploration():
     out2 = jit_info(ctrl2, params, traj_qpos_params2, mjx_data2, mjx_model, contact_ids)
     print(f"done in {time.time()-start}s")
 
+    breakpoint()
+
 
 if __name__ == "__main__":
     test_exploration()
