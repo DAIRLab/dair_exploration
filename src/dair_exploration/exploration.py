@@ -69,7 +69,7 @@ def expected_info(
     # Sim Forward
     data_stacked = mjx_util.diffsim(base_model, data_current, ctrl)
 
-    # Get Outputs (unnecessary)
+    # Get Outputs
     outputs = jit_outputs(
         params, data_stacked.qpos, data_stacked, base_model, contact_ids
     )
