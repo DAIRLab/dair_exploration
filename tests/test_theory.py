@@ -12,9 +12,10 @@ import jax.numpy as jnp
 
 import blackjax
 
-BASEVAR = 0.01
+BASEVAR = 1.0
 N_SAMPLE = 100000
 #N_SAMPLE_MCMC = 500
+N_SAMPLE_NORMAL = 100000
 
 def dynamics(x):
     # Just fall to the ground
@@ -24,9 +25,9 @@ def logpdf(xT, xt, var = BASEVAR):
     # Gaussian
     return -0.5 * jnp.reciprocal(var) * jnp.sum(jnp.square(xT - dynamics(xt)))
 
-def gradloss(xT, xt, varsoft=BASEVAR):
+def gradloss(xT, xt, mult=1.0):
     logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xt) # (N_SAMPLE x 2)
-    softmax = jax.nn.softmax(jax.vmap(logpdf, in_axes=(None, 0, None))(xT, xt, varsoft)).reshape((1, logpdf_grad.shape[0]))
+    softmax = jax.nn.softmax(mult * jax.vmap(logpdf, in_axes=(None, 0))(xT, xt)).reshape((1, logpdf_grad.shape[0]))
     return softmax @ logpdf_grad
 
 
@@ -73,11 +74,12 @@ def test_theory():
 
     # Sample Normal
     print("Gaussian sampling")
-    xt_normal_z = jax.random.uniform(rng_key, shape=(N_SAMPLE,), minval=0., maxval=1.)
-    xt_normal_x = xT[0] + jnp.sqrt(2.0*BASEVAR) * jax.random.normal(rng_key, (N_SAMPLE,))
+    xt_normal_z = jax.random.uniform(rng_key, shape=(N_SAMPLE_NORMAL,), minval=0., maxval=1.)
+    xt_normal_x = xT[0] + jnp.sqrt(2.0*BASEVAR) * jax.random.normal(rng_key, (N_SAMPLE_NORMAL,))
     xt_normal = jnp.stack([xt_normal_x, xt_normal_z]).T
-    gradloss_normal = gradloss(xT, xt_normal, varsoft=2.0*BASEVAR)
-    info_normal = -1.0 * jax.jacrev(partial(gradloss, varsoft=0.001*BASEVAR))(xT, xt_normal)
+
+    gradloss_normal = gradloss(xT, xt_normal, mult=0.5)
+    info_normal = -1.0 * jax.jacrev(gradloss)(xT, xt_normal, mult=0.5)
 
     breakpoint()
 
