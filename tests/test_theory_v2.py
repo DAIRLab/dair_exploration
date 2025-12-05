@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+
+"""
+Test theory from journal Sec 5
+"""
+
+from functools import partial
+import time
+
+import jax
+import jax.numpy as jnp
+
+import blackjax
+
+# plotting
+import numpy as np
+import matplotlib.pyplot as plt
+
+SPEED = 1.0
+BASEVAR = 0.001
+MEASVAR = 0.01
+N_SAMPLE_MCMC = 2000
+BATCH_SIZE = 500
+N_SAMPLE_UNIFORM = 2000000
+
+def dynamics(x, speed=SPEED):
+    # Just fall to the ground at constant speed
+    return x.at[-1].subtract(speed).at[-1].max(0.)
+
+def logpdf(xT, xt, var = BASEVAR):
+    # Gaussian, penalize negative start
+    return -0.5 * jnp.reciprocal(var) * jnp.sum(jnp.square(xT - dynamics(xt))) - 100.0 * jnp.abs(xt.at[-1].min(0.))[-1] 
+
+def logmeas(mt, xt, var = MEASVAR):
+    # Gaussian measurement
+    return -0.5 * jnp.reciprocal(var)* jnp.sum(jnp.square(mt - xt))
+
+# MCMC Inference Loop
+def inference_loop(rng_key, kernel, initial_state, num_samples):
+    @jax.jit
+    def one_step(state, rng_key):
+        state, _ = kernel(rng_key, state)
+        return state, state
+
+    keys = jax.random.split(rng_key, num_samples)
+    _, states = jax.lax.scan(one_step, initial_state, keys)
+
+    return states
+
+def loglikelihood(xT, xts, mt):
+    return jax.scipy.special.logsumexp(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)) - jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
+
+def loglikelihood_numerator(xT, xts, mt):
+    return jax.scipy.special.logsumexp(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
+
+def loglikelihood_norm(xT, xts):
+    return jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
+
+def loglikelihood_grad(xT, xts, mt):
+    logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
+    softmax1 = jax.nn.softmax(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    softmax2 = jax.nn.softmax(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    return (softmax1 - softmax2) @ logpdf_grad
+
+def loglikelihood_grad_num(xT, xts, mt):
+    logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
+    softmax = jax.nn.softmax(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    return (softmax) @ logpdf_grad
+
+def loglikelihood_grad_norm(xT, xts):
+    logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
+    softmax = jax.nn.softmax(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    return (softmax) @ logpdf_grad
+
+
+def loglikelihood_uniform_norm(xT):
+    # Sample xt, uniform in Z, Gaussian in X
+    rng_key = jax.random.key(int(time.time()))
+    xt_uniform = jax.random.uniform(rng_key, shape=(N_SAMPLE_UNIFORM, 2), minval=jnp.array([-10., -10.]), maxval=jnp.array([10., 10.]))
+    ret = jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xt_uniform))
+    return ret
+
+def loglikelihood_uniform_num(xT, mt):
+    # Sample xt, uniform in Z, Gaussian in X
+    rng_key = jax.random.key(int(time.time()))
+    xt_uniform = jax.random.uniform(rng_key, shape=(N_SAMPLE_UNIFORM, 2), minval=jnp.array([-10., -10.]), maxval=jnp.array([10., 10.]))
+    ret = jax.scipy.special.logsumexp(jax.vmap(logmeas, in_axes=(None, 0))(mt, xt_uniform) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xt_uniform))
+    return ret
+
+def test_theory():
+    """Theory Test"""
+    rng_key = jax.random.key(int(time.time()))
+    rng_key, warmup_key, sample_key = jax.random.split(rng_key, 3)
+    xT = jnp.array([0., 0.])
+    mt = jnp.array([0., 0. + SPEED])
+    xt_uniform = jax.random.uniform(rng_key, shape=(N_SAMPLE_UNIFORM, 2), minval=jnp.array([-5., -5.]), maxval=jnp.array([5., 5.]))
+
+    """
+    print("Plotting xt...")
+    plt.scatter(xt_uniform[:, 0], xt_uniform[:, 1])
+    plt.show()
+    
+    print("Plotting xt Z...")
+    plt.clf()
+    counts, bins = np.histogram(xt_uniform[:, -1], bins=N_SAMPLE_UNIFORM//100)
+    plt.stairs(counts, bins)
+    plt.show()
+
+    print("Plotting xt X...")
+    plt.clf()
+    counts, bins = np.histogram(xt_uniform[:, 0], bins=N_SAMPLE_UNIFORM//100)
+    plt.stairs(counts, bins)
+    plt.show()
+    """
+
+    print("MCMC Warmup for mt...", end="", flush=True)
+    start = time.time()
+    def logdensity(mt_sample):
+        return loglikelihood(xT, xt_uniform, mt_sample)
+    warmup = blackjax.window_adaptation(blackjax.nuts, logdensity)
+    (state, parameters), _ = warmup.run(warmup_key, mt, num_steps=N_SAMPLE_MCMC)
+    print(f"Done in {time.time() - start}s")
+
+    print("MCMC for mt...", end="", flush=True)
+    start = time.time()
+    kernel = blackjax.nuts(logdensity, **parameters).step
+    states = inference_loop(sample_key, kernel, state, N_SAMPLE_MCMC)
+    mt_mcmc = states.position
+    print(f"Done in {time.time() - start}s")
+
+    """
+    print("Plotting mt Z...")
+    plt.clf()
+    counts, bins = np.histogram(mt_mcmc[:, -1], bins=N_SAMPLE_MCMC//100)
+    plt.stairs(counts, bins)
+    plt.show()
+
+    print("Plotting mt X...")
+    plt.clf()
+    counts, bins = np.histogram(mt_mcmc[:, 0], bins=N_SAMPLE_MCMC//100)
+    plt.stairs(counts, bins)
+    plt.show()
+    """
+    print("Plotting mt...")
+    plt.scatter(mt_mcmc[:, 0], mt_mcmc[:, 1])
+    plt.show()
+
+    print("Computing Grads...")
+    grads_arr = []
+    batch_size = BATCH_SIZE
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        grads_arr.append(jax.jit(jax.vmap(jax.grad(loglikelihood), in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    grads = jnp.concatenate(grads_arr, axis=0)
+    avg_grad = jnp.sum(grads / mt_mcmc.shape[0], axis=0)
+    print(f"Average grad: {avg_grad}")
+    avg_grad_outer = jnp.sum(jax.vmap(jnp.outer)(grads, grads) / mt_mcmc.shape[0], axis=0)
+    print(f"Average grad outer product: {avg_grad_outer}")
+
+    print("Computing Grads Analytically...")
+    gradsv2_arr = []
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        gradsv2_arr.append(jax.jit(jax.vmap(loglikelihood_grad, in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    gradsv2 = jnp.concatenate(gradsv2_arr, axis=0)
+    avg_gradv2 = jnp.sum(gradsv2, axis=0) / mt_mcmc.shape[0]
+    print(f"Average analytic grad: {avg_gradv2}")
+    avg_gradv2_outer = jnp.sum(jax.vmap(jnp.outer)(gradsv2, gradsv2), axis=0) / mt_mcmc.shape[0]
+    print(f"Average analytic grad outer product: {avg_gradv2_outer}")
+
+    breakpoint()
+
+    print("Computing Hessians...")
+    hess_arr = []
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        hess_arr.append(jax.jit(jax.vmap(jax.hessian(loglikelihood), in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    hess = jnp.concatenate(hess_arr, axis=0)
+    avg_hess = jnp.sum(hess, axis=0) / mt_mcmc.shape[0]
+    print(f"Average negative Hessian: {-avg_hess}")
+
+    print("Computing Hess from Analytic Grad...")
+    hessv2_arr = []
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        hessv2_arr.append(jax.jit(jax.vmap(jax.jacrev(loglikelihood_grad), in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    hessv2 = jnp.concatenate(hessv2_arr, axis=0)
+    avg_hessv2 = jnp.sum(hessv2, axis=0) / mt_mcmc.shape[0]
+    print(f"Average negative Hessian from analytic grad: {-avg_hessv2}")
+
+    breakpoint()
+
+    print("Computing Hessian of numerator only...")
+    hess_num_arr = []
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        hess_num_arr.append(jax.jit(jax.vmap(jax.hessian(loglikelihood_numerator), in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    hess_num = jnp.concatenate(hess_num_arr, axis=0)
+    avg_hess_num = jnp.sum(hess_num, axis=0) / mt_mcmc.shape[0]
+    print(f"Average negative Hessian of numerator: {-avg_hess_num}")
+    print(f"Norm negative Hessian: {-jax.hessian(loglikelihood_norm)(xT, xt_uniform)}")
+
+    print("Computing Grads Numerator Only...")
+    grads_num_arr = []
+    for idx in range(mt_mcmc.shape[0] // batch_size):
+        print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
+        grads_num_arr.append(jax.jit(jax.vmap(loglikelihood_grad_num, in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+    grads_num = jnp.concatenate(grads_num_arr, axis=0)
+    avg_grad_num = jnp.sum(grads_num, axis=0) / mt_mcmc.shape[0]
+    print(f"Average grad numerator: {avg_grad_num}")
+    avg_grad_num_outer = jnp.sum(jax.vmap(jnp.outer)(grads_num, grads_num), axis=0) / mt_mcmc.shape[0]
+    print(f"Average grad numerator outer product: {avg_grad_num_outer}")
+    grad_norm = loglikelihood_grad_norm(xT, xt_uniform)
+    print(f"Grad Norm-only: {grad_norm}")
+    print(f"Grad Norm-only outer: {jnp.outer(grad_norm, grad_norm)}")
+
+    breakpoint()
+
+if __name__ == "__main__":
+    test_theory()
