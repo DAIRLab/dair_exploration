@@ -23,14 +23,17 @@ N_SAMPLE_MCMC = 2000
 BATCH_SIZE = 500
 N_SAMPLE_UNIFORM = 2000000
 
+@jax.jit
 def dynamics(x, speed=SPEED):
     # Just fall to the ground at constant speed
     return x.at[-1].subtract(speed).at[-1].max(0.)
 
+@jax.jit
 def logpdf(xT, xt, var = BASEVAR):
     # Gaussian, penalize negative start
     return -0.5 * jnp.reciprocal(var) * jnp.sum(jnp.square(xT - dynamics(xt))) - 100.0 * jnp.abs(xt.at[-1].min(0.))[-1] 
 
+@jax.jit
 def logmeas(mt, xt, var = MEASVAR):
     # Gaussian measurement
     return -0.5 * jnp.reciprocal(var)* jnp.sum(jnp.square(mt - xt))
@@ -47,32 +50,38 @@ def inference_loop(rng_key, kernel, initial_state, num_samples):
 
     return states
 
+@jax.jit
 def loglikelihood(xT, xts, mt):
     return jax.scipy.special.logsumexp(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)) - jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
 
+@jax.jit
 def loglikelihood_numerator(xT, xts, mt):
     return jax.scipy.special.logsumexp(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
 
+@jax.jit
 def loglikelihood_norm(xT, xts):
     return jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts))
 
-def loglikelihood_grad(xT, xts, mt):
+@jax.jit
+def loglikelihood_grad(xT, xts, mt, multiplier=1.0):
     logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
-    softmax1 = jax.nn.softmax(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
-    softmax2 = jax.nn.softmax(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    softmax1 = jax.nn.softmax(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + multiplier * jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
+    softmax2 = jax.nn.softmax(multiplier * jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
     return (softmax1 - softmax2) @ logpdf_grad
 
+@jax.jit
 def loglikelihood_grad_num(xT, xts, mt):
     logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
     softmax = jax.nn.softmax(jax.vmap(logmeas, in_axes=(None, 0))(mt, xts) + jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
     return (softmax) @ logpdf_grad
 
+@jax.jit
 def loglikelihood_grad_norm(xT, xts):
     logpdf_grad = jax.vmap(jax.grad(logpdf), in_axes=(None, 0))(xT, xts) # (N_SAMPLE x 2)
     softmax = jax.nn.softmax(jax.vmap(logpdf, in_axes=(None, 0))(xT, xts)).reshape((1, logpdf_grad.shape[0]))
     return (softmax) @ logpdf_grad
 
-
+@jax.jit
 def loglikelihood_uniform_norm(xT):
     # Sample xt, uniform in Z, Gaussian in X
     rng_key = jax.random.key(int(time.time()))
@@ -80,6 +89,7 @@ def loglikelihood_uniform_norm(xT):
     ret = jax.scipy.special.logsumexp(jax.vmap(logpdf, in_axes=(None, 0))(xT, xt_uniform))
     return ret
 
+@jax.jit
 def loglikelihood_uniform_num(xT, mt):
     # Sample xt, uniform in Z, Gaussian in X
     rng_key = jax.random.key(int(time.time()))
@@ -94,6 +104,26 @@ def test_theory():
     xT = jnp.array([0., 0.])
     mt = jnp.array([0., 0. + SPEED])
     xt_uniform = jax.random.uniform(rng_key, shape=(N_SAMPLE_UNIFORM, 2), minval=jnp.array([-5., -5.]), maxval=jnp.array([5., 5.]))
+
+    print("MCMC Warmup for xt (p2)...", end="", flush=True)
+    start = time.time()
+    def logdensityxt(xt_sample):
+        return 0.5 * logpdf(xT, xt_sample)
+    warmupxt = blackjax.window_adaptation(blackjax.nuts, logdensityxt)
+    (statext, parametersxt), _ = warmupxt.run(warmup_key, mt, num_steps=N_SAMPLE_MCMC)
+    print(f"Done in {time.time() - start}s")
+
+    print("MCMC for xt (p2)...", end="", flush=True)
+    start = time.time()
+    kernelxt = blackjax.nuts(logdensityxt, **parametersxt).step
+    statesxt = inference_loop(sample_key, kernelxt, statext, N_SAMPLE_MCMC)
+    xt_mcmc = statesxt.position
+    print(f"Done in {time.time() - start}s")
+
+    print("Plotting xt...")
+    plt.scatter(xt_mcmc[:, 0], xt_mcmc[:, 1])
+    plt.show()
+    plt.clf()
 
     """
     print("Plotting xt...")
@@ -115,6 +145,7 @@ def test_theory():
 
     print("MCMC Warmup for mt...", end="", flush=True)
     start = time.time()
+    @jax.jit
     def logdensity(mt_sample):
         return loglikelihood(xT, xt_uniform, mt_sample)
     warmup = blackjax.window_adaptation(blackjax.nuts, logdensity)
@@ -126,6 +157,16 @@ def test_theory():
     kernel = blackjax.nuts(logdensity, **parameters).step
     states = inference_loop(sample_key, kernel, state, N_SAMPLE_MCMC)
     mt_mcmc = states.position
+    print(f"Done in {time.time() - start}s")
+
+    print("MCMC for mt w/ xt_mcmc...", end="", flush=True)
+    @jax.jit
+    def logdensitywxt(mt_sample):
+        return loglikelihood(xT, xt_mcmc, mt_sample)
+    start = time.time()
+    kernel = blackjax.nuts(logdensitywxt, **parameters).step
+    states = inference_loop(sample_key, kernel, state, N_SAMPLE_MCMC)
+    mt_mcmc_xt_mcmc = states.position
     print(f"Done in {time.time() - start}s")
 
     """
@@ -142,31 +183,54 @@ def test_theory():
     plt.show()
     """
     print("Plotting mt...")
-    plt.scatter(mt_mcmc[:, 0], mt_mcmc[:, 1])
+    plt.scatter(mt_mcmc[:, 0], mt_mcmc[:, 1], label="mt_mcmc")
+    plt.scatter(mt_mcmc_xt_mcmc[:, 0], mt_mcmc_xt_mcmc[:, 1], label="mt_mcmc_xt_mcmc")
+    plt.legend()
     plt.show()
 
     print("Computing Grads...")
     grads_arr = []
+    grads_arr_mcmc = []
     batch_size = BATCH_SIZE
     for idx in range(mt_mcmc.shape[0] // batch_size):
         print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
         grads_arr.append(jax.jit(jax.vmap(jax.grad(loglikelihood), in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+        grads_arr_mcmc.append(jax.jit(jax.vmap(jax.grad(loglikelihood), in_axes=(None, None, 0)))(xT, xt_mcmc, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
     grads = jnp.concatenate(grads_arr, axis=0)
+    grads_mcmc = jnp.concatenate(grads_arr_mcmc, axis=0)
     avg_grad = jnp.sum(grads / mt_mcmc.shape[0], axis=0)
+    avg_grad_mcmc = jnp.sum(grads_mcmc / mt_mcmc.shape[0], axis=0)
     print(f"Average grad: {avg_grad}")
+    print(f"Average grad w/ xt MCMC: {avg_grad_mcmc}")
     avg_grad_outer = jnp.sum(jax.vmap(jnp.outer)(grads, grads) / mt_mcmc.shape[0], axis=0)
+    avg_grad_outer_mcmc = jnp.sum(jax.vmap(jnp.outer)(grads_mcmc, grads_mcmc) / mt_mcmc.shape[0], axis=0)
     print(f"Average grad outer product: {avg_grad_outer}")
+    print(f"Average grad outer product: {avg_grad_outer_mcmc}")
 
     print("Computing Grads Analytically...")
     gradsv2_arr = []
+    gradsv2_arr_mcmc = []
+    gradsv2_arr_mcmc_mcmc = []
     for idx in range(mt_mcmc.shape[0] // batch_size):
         print(f"{idx+1}/{mt_mcmc.shape[0] // batch_size}...")
         gradsv2_arr.append(jax.jit(jax.vmap(loglikelihood_grad, in_axes=(None, None, 0)))(xT, xt_uniform, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+        gradsv2_arr_mcmc.append(jax.jit(jax.vmap(partial(loglikelihood_grad, multiplier=0.5), in_axes=(None, None, 0)))(xT, xt_mcmc, mt_mcmc[idx*batch_size:(idx+1)*batch_size]))
+        gradsv2_arr_mcmc_mcmc.append(jax.jit(jax.vmap(partial(loglikelihood_grad, multiplier=0.5), in_axes=(None, None, 0)))(xT, xt_mcmc, mt_mcmc_xt_mcmc[idx*batch_size:(idx+1)*batch_size]))
     gradsv2 = jnp.concatenate(gradsv2_arr, axis=0)
+    gradsv2_mcmc = jnp.concatenate(gradsv2_arr_mcmc, axis=0)
+    gradsv2_mcmc_mcmc = jnp.concatenate(gradsv2_arr_mcmc_mcmc, axis=0)
     avg_gradv2 = jnp.sum(gradsv2, axis=0) / mt_mcmc.shape[0]
+    avg_gradv2_mcmc = jnp.sum(gradsv2_mcmc, axis=0) / mt_mcmc.shape[0]
+    avg_gradv2_mcmc_mcmc = jnp.sum(gradsv2_mcmc_mcmc, axis=0) / mt_mcmc_xt_mcmc.shape[0]
     print(f"Average analytic grad: {avg_gradv2}")
+    print(f"Average analytic grad w/ xt MCMC AND CORRECTION: {avg_gradv2_mcmc}")
+    print(f"Average analytic grad w/ xt MCMC, correction, and mt MCMC w/ xt MCMC: {avg_gradv2_mcmc_mcmc}")
     avg_gradv2_outer = jnp.sum(jax.vmap(jnp.outer)(gradsv2, gradsv2), axis=0) / mt_mcmc.shape[0]
+    avg_gradv2_outer_mcmc = jnp.sum(jax.vmap(jnp.outer)(gradsv2_mcmc, gradsv2_mcmc), axis=0) / mt_mcmc.shape[0]
+    avg_gradv2_outer_mcmc_mcmc = jnp.sum(jax.vmap(jnp.outer)(gradsv2_mcmc_mcmc, gradsv2_mcmc_mcmc), axis=0) / mt_mcmc_xt_mcmc.shape[0]
     print(f"Average analytic grad outer product: {avg_gradv2_outer}")
+    print(f"Average analytic grad outer product w/ xt MCMC AND CORRECTION: {avg_gradv2_outer_mcmc}")
+    print(f"Average analytic grad outer product w/ xt MCMC, correction, and mt MCMC w/ xt MCMC: {avg_gradv2_outer_mcmc_mcmc}")
 
     breakpoint()
 
