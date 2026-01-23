@@ -166,7 +166,7 @@ def write_qpos_to_data(
         ret_data = ret_data.replace(
             qpos=ret_data.qpos.at[qposidx_from_geom_name(base_model, key)].set(val)
         )
-    return base_data
+    return ret_data
 
 
 def write_qvel_to_data(
@@ -177,7 +177,7 @@ def write_qvel_to_data(
         ret_data = ret_data.replace(
             qvel=ret_data.qvel.at[qvelidx_from_geom_name(base_model, key)].set(val)
         )
-    return base_data
+    return ret_data
 
 
 ## Compiled base functions
