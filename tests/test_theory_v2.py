@@ -29,9 +29,15 @@ def dynamics(x, speed=SPEED):
     return x.at[-1].subtract(speed).at[-1].max(0.)
 
 @jax.jit
-def logpdf(xT, xt, var = BASEVAR):
+def logpdf_old(xT, xt, var = BASEVAR):
     # Gaussian, penalize negative start
     return -0.5 * jnp.reciprocal(var) * jnp.sum(jnp.square(xT - dynamics(xt))) - 100.0 * jnp.abs(xt.at[-1].min(0.))[-1] 
+
+@jax.jit
+def logpdf(xT, xt, var = BASEVAR):
+    # ContactNets, min_{lamb>0} (xT - (xt - SPEED + lamb))^2 + lamb*xt
+    lamb = (SPEED - xt[-1:]).at[0].max(0.)[0]
+    return -jnp.reciprocal(var) * (0.5*jnp.square(xT[-1] - (xt[-1]-SPEED+lamb)) + lamb*xT[-1] + jnp.square(xT[0] - xt[0])) - 100.0 * jnp.abs(xt.at[-1].min(0.))[-1] 
 
 @jax.jit
 def logmeas(mt, xt, var = MEASVAR):
@@ -101,10 +107,34 @@ def test_theory():
     """Theory Test"""
     rng_key = jax.random.key(int(time.time()))
     rng_key, warmup_key, sample_key = jax.random.split(rng_key, 3)
-    xT = jnp.array([0., 0.])
-    mt = jnp.array([0., 0. + SPEED])
+    xT = jnp.array([0., 0.01])
+    mt = jnp.array([0., 0.01 + SPEED])
     xt_uniform = jax.random.uniform(rng_key, shape=(N_SAMPLE_UNIFORM, 2), minval=jnp.array([-5., -5.]), maxval=jnp.array([5., 5.]))
 
+    """ TESTING p(xt | xT) logpdf_old vs logpdf
+    def logdensityxt(xTval, xt_sample):
+            return logpdf(xTval, xt_sample)
+    xT_zs = 0.01*jnp.arange(6)
+    for xT_z in xT_zs:
+        xTval = jnp.array([0., xT_z])
+        print(f"MCMC Warmup for {xT_z:.2f}...", end="", flush=True)
+        start = time.time()
+        warmupxt = blackjax.window_adaptation(blackjax.nuts, partial(logdensityxt, xTval))
+        (statext, parametersxt), _ = warmupxt.run(warmup_key, xT, num_steps=N_SAMPLE_MCMC)
+        print(f"Done in {time.time() - start}s")
+        print(f"MCMC for {xT_z:.2f}...", end="", flush=True)
+        start = time.time()
+        kernelxt = blackjax.nuts(partial(logdensityxt, xTval), **parametersxt).step
+        statesxt = inference_loop(sample_key, kernelxt, statext, N_SAMPLE_MCMC)
+        xt_mcmc = statesxt.position
+        counts, bins = np.histogram(xt_mcmc[:, -1], bins=20)
+        plt.stairs(counts, bins, label=f"xT_z={xT_z:.2f}")
+        print(f"Done in {time.time() - start}s")
+    plt.legend()
+    plt.show()
+
+    breakpoint()
+    """
     print("MCMC Warmup for xt (p2)...", end="", flush=True)
     start = time.time()
     def logdensityxt(xt_sample):
@@ -120,22 +150,18 @@ def test_theory():
     xt_mcmc = statesxt.position
     print(f"Done in {time.time() - start}s")
 
-    print("Plotting xt...")
-    plt.scatter(xt_mcmc[:, 0], xt_mcmc[:, 1])
-    plt.show()
+
+    print("Plotting xt Z...")
     plt.clf()
+    counts, bins = np.histogram(xt_mcmc[:, -1], bins=N_SAMPLE_MCMC//100)
+    plt.stairs(counts, bins)
+    plt.show()
 
     """
     print("Plotting xt...")
     plt.scatter(xt_uniform[:, 0], xt_uniform[:, 1])
     plt.show()
     
-    print("Plotting xt Z...")
-    plt.clf()
-    counts, bins = np.histogram(xt_uniform[:, -1], bins=N_SAMPLE_UNIFORM//100)
-    plt.stairs(counts, bins)
-    plt.show()
-
     print("Plotting xt X...")
     plt.clf()
     counts, bins = np.histogram(xt_uniform[:, 0], bins=N_SAMPLE_UNIFORM//100)
@@ -205,7 +231,7 @@ def test_theory():
     avg_grad_outer = jnp.sum(jax.vmap(jnp.outer)(grads, grads) / mt_mcmc.shape[0], axis=0)
     avg_grad_outer_mcmc = jnp.sum(jax.vmap(jnp.outer)(grads_mcmc, grads_mcmc) / mt_mcmc.shape[0], axis=0)
     print(f"Average grad outer product: {avg_grad_outer}")
-    print(f"Average grad outer product: {avg_grad_outer_mcmc}")
+    print(f"Average grad outer product w/ xt MCMC: {avg_grad_outer_mcmc}")
 
     print("Computing Grads Analytically...")
     gradsv2_arr = []
