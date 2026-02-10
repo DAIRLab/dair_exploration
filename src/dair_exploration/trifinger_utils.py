@@ -71,6 +71,10 @@ class TrifingerLCMService:
         """Fingertip body names"""
         return self._fingertip_geom_names
 
+    @property
+    def object_geom_name(self):
+        return self._object_geom_name
+
     def get_current_object_pose(self) -> np.ndarray:
         """Blocks and retrieves the most recent object position"""
 
@@ -140,10 +144,13 @@ class TrifingerLCMService:
         while time.time() < end_time:
             self._lcm.handle_timeout(int((end_time - time.time()) * 1e3))
         print(f"Finished at: {time.time()}")
-        print(
-            f"Collected {len(self._fingertip_pose_raw_data)}"
-            + f" / {len(self._force_raw_data)} / {len(self._object_raw_data)} samples."
-        )
+        if no_data:
+            print("No data collected as requested.")
+        else:
+            print(
+                f"Collected {len(self._fingertip_pose_raw_data)}"
+                + f" / {len(self._force_raw_data)} / {len(self._object_raw_data)} samples."
+            )
 
         # Return empty if not any force data
         if no_data or len(self._force_raw_data) < 1:
@@ -156,9 +163,11 @@ class TrifingerLCMService:
         def is_sorted(a: np.ndarray) -> bool:
             return np.all(a[:-1] <= a[1:])
 
+        # Recenter on 0 to avoid float precision issues
+        init_timestamp = self._force_raw_data[0].sensorData[0].timestamp
         densetact_time_s = np.array(
             [
-                float(measurement.sensorData[0].timestamp) / 1e6
+                float(measurement.sensorData[0].timestamp - init_timestamp) / 1e6
                 for measurement in self._force_raw_data
             ]
         ).flatten()
@@ -175,13 +184,16 @@ class TrifingerLCMService:
 
         fingerpos_time_s = np.array(
             [
-                float(measurement.utime) / 1e6
+                float(measurement.utime - init_timestamp) / 1e6
                 for measurement in self._fingertip_pose_raw_data
             ]
         ).flatten()
         assert is_sorted(fingerpos_time_s)
         object_time_s = np.array(
-            [float(measurement.utime) / 1e6 for measurement in self._object_raw_data]
+            [
+                float(measurement.utime - init_timestamp) / 1e6
+                for measurement in self._object_raw_data
+            ]
         ).flatten()
         assert is_sorted(object_time_s)
 
@@ -340,5 +352,5 @@ class TrifingerLCMService:
         # Prune repeat timestamps
         # Already done by fn_prune
         # ret_pruned = jnp.concatenate([ret[:1], ret[1:][np.nonzero(densetact_dt.flatten())]])
-        print(f"Number of unique samples: {len(ret[time])}")
+        print(f"Number of unique samples: {len(ret["time"])}")
         return ret

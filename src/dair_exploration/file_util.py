@@ -4,6 +4,7 @@
 import datetime
 from pathlib import Path
 import shutil
+import pickle
 
 import gin
 import git
@@ -54,3 +55,12 @@ def copy_run_config(file_in: Path, out_name: str) -> None:
     config_results_dir = results_dir() / "config"
     config_results_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(file_in, config_results_dir / out_name)
+
+
+def write_object(obj: Any, subdir: str, out_name: str) -> None:
+    """Write an object into the run directory"""
+    sub_results_dir = results_dir() / subdir
+    sub_results_dir.mkdir(parents=True, exist_ok=True)
+    with (sub_results_dir / out_name).open("wb") as file:
+        pickle.dump(obj, file)
+    print(f"Object written to {(sub_results_dir / out_name).as_posix()}")

@@ -17,6 +17,7 @@ traj_len_dts = 31 # 30Hz + 1
 
 ## Main Config
 main.model_file = "default.mjcf"
+results_dir.name = "wip"
 
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
@@ -41,6 +42,6 @@ ActionWorkspaceParams.finger_0_vec = @finger_0_vec/np.array()
 finger_120_vec/np.array.object = [1., 0., 0.] #[0.8660254, -0.5, 0.] #
 ActionWorkspaceParams.finger_120_vec = @finger_120_vec/np.array()
 ActionWorkspaceParams.ra_range = (-1.256637061, 1.256637061) # [-2pi/5, 2pi/5]
-ActionWorkspaceParams.dec_range = (-0.523598776, -1.256637061) # [-pi/6, 2pi/5]
+ActionWorkspaceParams.dec_range = (0., 1.256637061) # [0., 2pi/5]
 ActionWorkspaceParams.ground_buffer = True
 ActionWorkspaceParams.robot_buffer = True

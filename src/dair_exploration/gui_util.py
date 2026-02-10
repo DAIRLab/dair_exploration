@@ -192,7 +192,8 @@ class MJXMeshcatVisualizer:
                 draw_geom = geometry.LineSegments(
                     geometry.PointsGeometry(position=vertices.astype(np.float32)),
                     geometry.LineBasicMaterial(
-                        color=(0x19E6E6 if finger_idx == 0 else 0xE619E6)
+                        color=(0x19E6E6 if finger_idx == 0 else 0xE619E6),
+                        linewidth=40.0,
                     ),
                 )
                 self._meshcat["actions"][f"{knot_idx}"][f"{finger_name}"].set_object(

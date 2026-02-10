@@ -5,8 +5,9 @@ Entry Point for Exploration Experiment
 
 import argparse
 import pdb
-from typing import Optional
 import signal
+import time
+from typing import Optional
 
 import gin
 import jax.numpy as jnp
@@ -16,13 +17,19 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from dair_exploration import mjx_util
-from dair_exploration.file_util import copy_run_config, get_config, results_dir
+from dair_exploration.file_util import (
+    enable_jax_cache,
+    copy_run_config,
+    get_config,
+    results_dir,
+)
 from dair_exploration.gui_util import MJXMeshcatVisualizer
 from dair_exploration.trifinger_utils import TrifingerLCMService
 from dair_exploration.action_utils import (
     ActionWorkspaceParams,
     ActionCEM,
     action_to_knots,
+    interpolate_knots,
 )
 
 ## Handle SIGINT
@@ -50,6 +57,7 @@ def main(
 
     # Debug: Remove scientific notation for numpy printing
     np.set_printoptions(suppress=True)
+    enable_jax_cache()
     print("Active Tactile Exploration")
 
     # Handle SIGINT
@@ -80,30 +88,41 @@ def main(
     )
     mjx_init_data = mjx.make_data(mjx_model)
 
-    # GUI Visualization
-    gui_vis = MJXMeshcatVisualizer(
-        mjx_model, mjx_util.jit_forward(mjx_model, mjx_init_data)
-    )
-
     # Sample initial action (from true obj pose)
     action_cem = ActionCEM(action_params)
     selected_action = action_params.random_action()
     selected_knots = np.stack(
         [action_params.get_reset_knot(), action_params.get_reset_knot()]
     )
+    start_true_object_pose = trifinger_lcm.get_current_object_pose()
     first_knots = action_to_knots(
         action_params,
         [selected_action],
-        trifinger_lcm.get_current_object_pose(),
+        start_true_object_pose,
         force_finger=0,
     )[0]
     # Move both fingers
     selected_knots = first_knots
     # Only move one finger
     # selected_knots[:, :3] = first_knots[:, :3]
-    gui_vis.draw_action_samples(selected_knots[np.newaxis, :, :])
 
-    breakpoint()
+    # GUI Visualization
+    gui_vis = MJXMeshcatVisualizer(
+        mjx_model, mjx_util.jit_forward(mjx_model, mjx_init_data)
+    )
+    gui_vis.update_visuals(
+        mjx_model,
+        [mjx_util.jit_forward(mjx_model, mjx_init_data)],
+        {
+            trifinger_lcm.object_geom_name: [
+                (
+                    start_true_object_pose[4:],
+                    Rotation.from_quat(start_true_object_pose[:4], scalar_first=True),
+                )
+            ]
+        },
+    )
+    gui_vis.draw_action_samples(selected_knots[np.newaxis, :, :])
 
     # Start Input Loop
     def print_help():
@@ -121,69 +140,80 @@ def main(
         command_char = input("Command $ ").split(" ")[0]
 
         if command_char == "h":
+            ## Print Help
             print_help()
+            ## END Print Help
 
         elif command_char == "b":
+            ## Debug Breakpoint
             # pylint: disable-next=forgotten-debug-statement
             pdb.Pdb(nosigint=True).set_trace()
             # ipdb.set_trace()
+            ## END Debug Breakpoint
 
         elif command_char == "e":
-            ## Execute selected action
-            # Move to start state
-            trifinger_lcm.execute_trajectory(selected_action[0], no_data=True)
+            ## Collect New Data
+            new_trajectory = None
+            while new_trajectory is None:
+                trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
+                time.sleep(0.1)
 
-            # Execute and collect data
-            new_trajectory = trifinger_lcm.execute_trajectory(selected_action[1])
+                # Execute and collect data
+                new_trajectory = trifinger_lcm.execute_trajectory(selected_knots[1])
 
-            if len(new_trajectory) < 1:
-                print("WARNING: No data collected")
-                continue
+                # Move back to start state
+                trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
 
-            # Construct control, last timestep control repeats
-            qpos_qvel = jnp.hstack(
-                [
-                    jnp.hstack(
-                        [
-                            new_trajectory[1][geom_name][value]
-                            for geom_name in trifinger_lcm.fingertip_geom_names
-                        ]
-                    )
-                    for value in ["position", "velocity"]
-                ]
+                if new_trajectory is None:
+                    input("None trajectory, check densetacts. Enter to retry...")
+
+            # Write ctrl to new trajectory
+            ctrl_total = interpolate_knots(
+                jnp.array(selected_knots), new_trajectory["time"]
             )
-            ctrl = jnp.vstack([qpos_qvel[1:, :], qpos_qvel[-1:, :]])
-
-            # Overwrite robot qpos/qvel
-            qpos_overwrite = {}
-            qvel_overwrite = {}
-            for geom_name in trifinger_lcm.fingertip_geom_names:
-                qpos_overwrite[geom_name] = new_trajectory[1][geom_name]["position"]
-                qvel_overwrite[geom_name] = new_trajectory[1][geom_name]["velocity"]
-
-            print("Running simulation...")
-            new_data = diffsim.diffsim_overwrite(
-                mjx_model, mjx_init_data, ctrl, qpos_overwrite, qvel_overwrite
-            )
-
-            print("Visualizing...")
-            obj_traj = {
-                trifinger_lcm.object_geom_name: [
-                    (
-                        new_trajectory[1][trifinger_lcm.object_geom_name]["position"][
-                            idx, 4:
+            n_q = ctrl_total.shape[-1] // 2
+            for geom_idx, geom_name in enumerate(trifinger_lcm.fingertip_geom_names):
+                new_trajectory[geom_name]["ctrl"] = np.concatenate(
+                    [
+                        ctrl_total[:, geom_idx * 3 : (geom_idx + 1) * 3],
+                        ctrl_total[
+                            :, (n_q + geom_idx * 3) : (n_q + (geom_idx + 1) * 3)
                         ],
-                        Rotation.from_quat(
-                            new_trajectory[1][trifinger_lcm.object_geom_name][
-                                "position"
-                            ][idx, :4],
-                            scalar_first=True,
-                        ),
-                    )
-                    for idx in range(ctrl.shape[0])
-                ]
-            }
-            gui_vis.update_visuals(mjx_model, new_data, obj_traj)
+                    ],
+                    axis=-1,
+                )
+
+            # Write data to TrajectorySet
+
+            # Visualize New Data
+            gui_vis.update_visuals(
+                mjx_model,
+                [mjx_util.jit_forward(mjx_model, mjx_init_data)]
+                * len(new_trajectory["time"]),
+                {
+                    trifinger_lcm.object_geom_name: [
+                        (
+                            row[4:],
+                            Rotation.from_quat(row[:4], scalar_first=True),
+                        )
+                        for row in new_trajectory[trifinger_lcm.object_geom_name][
+                            "position"
+                        ]
+                    ],
+                }
+                | {
+                    geom_name: [
+                        (
+                            row,
+                            Rotation.identity(),
+                        )
+                        for row in new_trajectory[geom_name]["position"]
+                    ]
+                    for geom_name in trifinger_lcm.fingertip_geom_names
+                },
+            )
+
+            ## END Collect New Data
 
     # Quit
     print("Done!")

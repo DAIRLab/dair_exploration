@@ -17,6 +17,9 @@ import gin
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+import jax
+import jax.numpy as jnp
+
 ## Action / Workspace Parameters
 N_ACTION_PARAMS = 4
 
@@ -262,6 +265,64 @@ class ActionCEM:
             return self._rng.choice(best_actions)
 
         raise ValueError(f"Unimplemented Return Style: {self._return_style}")
+
+
+def interpolate_knots(
+    action_knots: jax.Array,
+    timestamps: jax.Array,
+) -> np.ndarray:
+    """
+    Interpolate knot points w/ cubic spline for provided timestamps
+
+    Assume n_q == n_v (i.e. no quaternions)
+
+    Params:
+        action_knots: (2, n_q + n_v)
+        timestamps: (T)
+
+    Returns: (T, n_q + n_v) where [0] = action_knots[0] and [T-1] = action_knots[1]
+    """
+    # Input Validation
+    assert len(action_knots.shape) >= 2
+    assert action_knots.shape[-2] == 2
+    assert action_knots.shape[-1] % 2 == 0
+    assert len(timestamps.shape) == 1
+    assert timestamps[-1] > timestamps[0]
+
+    # Get Relative Timestamps
+    rel_timestamps = (timestamps - timestamps[0]) / (timestamps[-1] - timestamps[0])
+
+    # Interpolation
+    n_q = action_knots.shape[-1] // 2
+    samples = action_knots[..., :, :n_q]  # (batch, 2, n_q)
+    samples_dot = action_knots[..., :, n_q:]  # (batch, 2, n_q)
+    spline_a = samples[..., 0, :]  # (batch, n_q)
+    spline_b = samples_dot[..., 0, :]  # (batch, n_q)
+    spline_c = (
+        3.0 * (samples[..., 1, :] - samples[..., 0, :])
+        - 2.0 * samples_dot[..., 0, :]
+        - samples_dot[..., 1, :]
+    )  # (batch, n_q)
+    spline_d = (
+        2.0 * (samples[..., 0, :] - samples[..., 1, :])
+        + samples_dot[..., 0, :]
+        + samples_dot[..., 1, :]
+    )  # (batch, n_q)
+
+    # (batch, T, n_q)
+    data_lerp = (
+        jnp.outer(jnp.pow(rel_timestamps, 0.0), spline_a)
+        + jnp.outer(jnp.pow(rel_timestamps, 1.0), spline_b)
+        + jnp.outer(jnp.pow(rel_timestamps, 2.0), spline_c)
+        + jnp.outer(jnp.pow(rel_timestamps, 3.0), spline_d)
+    )
+    data_lerp_dot = (
+        jnp.outer(jnp.pow(rel_timestamps, 0.0), spline_b)
+        + 2.0 * jnp.outer(jnp.pow(rel_timestamps, 1.0), spline_c)
+        + 3.0 * jnp.outer(jnp.pow(rel_timestamps, 2.0), spline_d)
+    )
+
+    return np.concatenate([data_lerp, data_lerp_dot], axis=-1)
 
 
 @gin.configurable

@@ -21,10 +21,10 @@
     <light dir="-.2 1 -.4" diffuse=".9 .9 .9" specular="0.6 0.9 0.6" pos="2 -5 6" cutoff="70"/>
 
     <camera name="closeup" pos=".4 -.4 .4" xyaxes="1 1 0 -1 1 3" resolution="640 480"/>
-    <body name="true" pos="0 0 0.0325" gravcomp="1">
+    <body name="true" pos="0 0 0.02" gravcomp="1">
       <freejoint />
       <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
-      <geom name="true-geom" type="box" size="0.0325 0.0325 0.0325" rgba="0.8 0.0 0.0 0.3" contype="0" conaffinity="0" />
+      <geom name="true-geom" type="box" size="0.02 0.02 0.02" rgba="0.8 0.0 0.0 0.3" contype="0" conaffinity="0" />
     </body>
 
     <!-- Body initial pose, initial guess -->
@@ -41,7 +41,7 @@
 
     <body name="spherebot1" pos="0.1 0 0.05" gravcomp="1">
       <!-- Robot Mass, COM, Inertia -->
-      <inertial diaginertia="1 1 1" mass="0.2" pos="0 0 0"/>
+      <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
 
       <!-- Robot has 3x prismatic joints (rotation doesn't matter)-->
       <joint name="spherebot1-x" type="slide" axis="1 0 0" ref="0.1"/>
@@ -51,13 +51,13 @@
       <!-- Dummy node for force sensor -->
       <body name="spherebot1-dummy">
         <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
-        <geom name="spherebot1-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
+        <geom name="spherebot1-geom" type="sphere" size="0.01" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
         <site name="spherebot1-site" pos="0 0 0"/>
       </body>
     </body>
 
     <body name="spherebot2" pos="-0.1 0 0.05" gravcomp="1">
-      <inertial diaginertia="1 1 1" mass="0.2" pos="0 0 0"/>
+      <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
       
       <joint name="spherebot2-x" type="slide" axis="1 0 0" ref="-0.1"/>
       <joint name="spherebot2-y" type="slide" axis="0 1 0" ref="0"/>
@@ -65,7 +65,7 @@
 
       <body name="spherebot2-dummy">
         <inertial diaginertia="1 1 1" mass="0" pos="0 0 0"/>
-        <geom name="spherebot2-geom" type="sphere" size="0.01575" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
+        <geom name="spherebot2-geom" type="sphere" size="0.01" rgba="0.1 0.9 0.1 1.0" friction="1 0.005 0.0001" />
         <site name="spherebot2-site" pos="0 0 0"/>
       </body>
     </body>
@@ -97,13 +97,11 @@
     <velocity joint="spherebot1-x" kv="10"/>
     <velocity joint="spherebot1-y" kv="10"/>
     <velocity joint="spherebot1-z" kv="10"/>
-    <!--
     <position joint="spherebot2-x" kp="20"/>
     <position joint="spherebot2-y" kp="20"/>
     <position joint="spherebot2-z" kp="20"/>
     <velocity joint="spherebot2-x" kv="10"/>
     <velocity joint="spherebot2-y" kv="10"/>
     <velocity joint="spherebot2-z" kv="10"/>
-  -->
   </actuator>
 </mujoco>
