@@ -91,6 +91,9 @@ def contactids_from_collision_geoms(
     sensor_geomids = [geomid_from_geom_name(base_model, name) for name in sensor_geoms]
     object_geomids = [geomid_from_geom_name(base_model, name) for name in object_geoms]
 
+    # MJX requires access via _impl
+    # pylint: disable=protected-access
+
     return np.where(
         np.logical_or(
             np.logical_and(
@@ -161,6 +164,7 @@ def write_params_to_model(
 def write_qpos_to_data(
     base_model: mjx.Model, base_data: mjx.Data, traj_qpos: dict[str, jax.Array]
 ) -> mjx.Data:
+    """Write a qpos parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qpos.items():
         ret_data = ret_data.replace(
@@ -172,6 +176,7 @@ def write_qpos_to_data(
 def write_qvel_to_data(
     base_model: mjx.Model, base_data: mjx.Data, traj_qvel: dict[str, jax.Array]
 ) -> mjx.Data:
+    """Write a qvel parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qvel.items():
         ret_data = ret_data.replace(
@@ -238,6 +243,7 @@ def diffsim_overwrite(
 
 
 def data_unstack(data: mjx.Data) -> list[mjx.Data]:
+    """Unstack a data object with a batch dimension into a list of mjx datas"""
     leaves, treedef = jax.tree.flatten(data)
     return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 

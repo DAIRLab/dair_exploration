@@ -1,17 +1,46 @@
 # Default GIN Config File for run_experiment.py
 
+## CONSTANTS
+PI = 3.141592653589793
+PI2 = 1.5707963267948966
+NPI2 = -1.5707963267948966
+
+## General Config
+robot_radius = 0.01  # Add 1mm buffer on each robot for REAL only
+robot_buffer_radius = 0.012 #0.01575 from trifingeredu.urdf + buffer
+workspace_radius = 0.12
+object_geom_name = "true-geom"
+fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
+default_dt = 0.03333333333333333 # 30 Hz
+traj_len_s = 1.0 # s, how long each trajectory is
+traj_len_dts = 31 # 30Hz + 1
+
 ## Main Config
 main.model_file = "default.mjcf"
-
-
 
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
 TrifingerLCMService.object_geom_name = "true-geom"
-TrifingerLCMService.traj_time_len = 2.0
+TrifingerLCMService.traj_time_len = 1.0
 TrifingerLCMService.lcm_channels = {
 	"fingertips_position": "FINGERTIPS_POSITION_SIMULATION", # lcmt_fingertips_position "FINGERTIPS_POSITION"
 	"object_state": "CUBE_STATE_SIMULATION", # lcmt_object_state
 	"densetact": "DENSETACT_DATA_SIMULATION", # lcmt_densetact_measurement_data
 	"fingertips_target": "FINGERTIPS_TARGET_KINEMATICS_SIMULATION", #lcmt_fingertips_target_kinematics
 }
+
+## Action Sampling
+ActionWorkspaceParams.workspace_xy_center = (0., 0.)
+ActionWorkspaceParams.workspace_radius = %workspace_radius
+ActionWorkspaceParams.robot_radius = %robot_buffer_radius
+fixed_240_w/np.array.object = [0.15, 0.15, 0.15]
+ActionWorkspaceParams.fixed_240_w = @fixed_240_w/np.array()
+ActionWorkspaceParams.approach_radius = 0.12
+finger_0_vec/np.array.object = [-1., 0., 0.] #[-0.8660254, 0.5, 0.] #
+ActionWorkspaceParams.finger_0_vec = @finger_0_vec/np.array()
+finger_120_vec/np.array.object = [1., 0., 0.] #[0.8660254, -0.5, 0.] #
+ActionWorkspaceParams.finger_120_vec = @finger_120_vec/np.array()
+ActionWorkspaceParams.ra_range = (-1.256637061, 1.256637061) # [-2pi/5, 2pi/5]
+ActionWorkspaceParams.dec_range = (-0.523598776, -1.256637061) # [-pi/6, 2pi/5]
+ActionWorkspaceParams.ground_buffer = True
+ActionWorkspaceParams.robot_buffer = True

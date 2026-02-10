@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 """Utility functions for File Operations"""
-import os
+import datetime
+from pathlib import Path
+import shutil
+
+import gin
 import git
 import jax
 
@@ -19,13 +23,34 @@ def enable_jax_cache():
     )
 
 
-def repo_dir():
+def repo_dir() -> Path:
     """Get GIT repo dir when running inside of the git repository"""
-    return os.path.normpath(
+    ret = Path(
         git.Repo(search_parent_directories=True).git.rev_parse("--show-toplevel")
     )
+    assert ret.is_dir()
+    return ret
 
 
-def get_config(file: str):
+def get_config(file: str) -> Path:
     """Get config from hard-coded config directory"""
-    return os.path.join(repo_dir(), os.path.join("config", file))
+    return repo_dir() / "config" / file
+
+
+@gin.configurable
+def results_dir(name: str = "run") -> Path:
+    """Get config from hard-coded config directory"""
+    result_path = (
+        repo_dir()
+        / "results"
+        / f"{datetime.datetime.now().replace(microsecond=0).isoformat()}_{name}"
+    )
+    result_path.mkdir(parents=True, exist_ok=True)
+    return result_path
+
+
+def copy_run_config(file_in: Path, out_name: str) -> None:
+    """Copy a config file into the run directory"""
+    config_results_dir = results_dir() / "config"
+    config_results_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(file_in, config_results_dir / out_name)

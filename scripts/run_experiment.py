@@ -6,6 +6,7 @@ Entry Point for Exploration Experiment
 import argparse
 import pdb
 from typing import Optional
+import signal
 
 import gin
 import jax.numpy as jnp
@@ -14,44 +15,95 @@ from mujoco import mjx
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from dair_exploration import diffsim
-from dair_exploration.file_util import get_config
+from dair_exploration import mjx_util
+from dair_exploration.file_util import copy_run_config, get_config, results_dir
 from dair_exploration.gui_util import MJXMeshcatVisualizer
-from dair_exploration.trifinger_utils import (
-    TrifingerLCMService,
-    sample_action,
-    Action,
+from dair_exploration.trifinger_utils import TrifingerLCMService
+from dair_exploration.action_utils import (
+    ActionWorkspaceParams,
+    ActionCEM,
+    action_to_knots,
 )
+
+## Handle SIGINT
+signal_pressed = False
+
+
+def signal_handler(_sig, _frame):
+    """Handle SIGINT"""
+    # pylint: disable=global-statement
+    global signal_pressed
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal_pressed = True
+    signal.signal(signal.SIGINT, signal_handler)
 
 
 ## Main Function
 @gin.configurable
 def main(
+    config_file: str,
     model_file: str,
-    action_library: Optional[list[Action]] = None,
 ):
     """Main function for online learning loop"""
+
+    # pylint: disable=too-many-locals
+
     # Debug: Remove scientific notation for numpy printing
     np.set_printoptions(suppress=True)
     print("Active Tactile Exploration")
 
+    # Handle SIGINT
+    global signal_pressed
+    signal_pressed = False
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Create results directory
+    run_dir = results_dir()
+    # Save config files to run dir
+    copy_run_config(get_config(config_file), "config.gin")
+    copy_run_config(get_config(model_file), "model.mjcf")
+    print(f"Storing data and results at {run_dir}")
+
+    # Initialize LCM
+    action_params = ActionWorkspaceParams()
+    # Pylint doesn't know about gin
+    # pylint: disable-next=no-value-for-parameter
+    trifinger_lcm = TrifingerLCMService()
+    print("Resetting Trifinger Position...")
+    trifinger_lcm.execute_trajectory(action_params.get_reset_knot(), no_data=True)
+    new_trajectory = None
+
     # Create learnable system
     print("JIT Mujoco XLA Step...")
-    mjx_model = mjx.put_model(mujoco.MjModel.from_xml_path(get_config(model_file)))
+    mjx_model = mjx.put_model(
+        mujoco.MjModel.from_xml_path(get_config(model_file).as_posix())
+    )
     mjx_init_data = mjx.make_data(mjx_model)
 
     # GUI Visualization
     gui_vis = MJXMeshcatVisualizer(
-        mjx_model, diffsim.jit_step(mjx_model, mjx_init_data)
+        mjx_model, mjx_util.jit_forward(mjx_model, mjx_init_data)
     )
 
-    # Initialize LCM
-    # Pylint doesn't know about gin
-    # pylint: disable-next=no-value-for-parameter
-    trifinger_lcm = TrifingerLCMService()
-    print("Sample Initial Random Action...")
-    selected_action = sample_action(library=action_library)
-    new_trajectory = None
+    # Sample initial action (from true obj pose)
+    action_cem = ActionCEM(action_params)
+    selected_action = action_params.random_action()
+    selected_knots = np.stack(
+        [action_params.get_reset_knot(), action_params.get_reset_knot()]
+    )
+    first_knots = action_to_knots(
+        action_params,
+        [selected_action],
+        trifinger_lcm.get_current_object_pose(),
+        force_finger=0,
+    )[0]
+    # Move both fingers
+    selected_knots = first_knots
+    # Only move one finger
+    # selected_knots[:, :3] = first_knots[:, :3]
+    gui_vis.draw_action_samples(selected_knots[np.newaxis, :, :])
+
+    breakpoint()
 
     # Start Input Loop
     def print_help():
@@ -148,11 +200,13 @@ def main_fn():
     args = parser.parse_args()
 
     # Parse config file and start
+    gin.register(np.array, module="np")
+    gin.register(np.random.uniform, module="np.random")
     print(f"Loading Config File: {get_config(args.config_file)}")
     gin.parse_config_file(get_config(args.config_file))
     # Pylint doesn't know about gin
     # pylint: disable-next=no-value-for-parameter
-    main()
+    main(config_file=args.config_file)
 
 
 if __name__ == "__main__":

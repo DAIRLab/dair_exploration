@@ -33,7 +33,7 @@ class MJXMeshcatVisualizer:
     _timestep: DoubleVar
 
     def __init__(self, model: mjx.Model, init_data: Optional[mjx.Data]) -> None:
-        self._meshcat = meshcat.Visualizer()
+        self._meshcat = meshcat.Visualizer().open()
         print(f"Started Meshcat server at: {self._meshcat.url()}")
         self._model = model
         self._data = []
@@ -167,3 +167,38 @@ class MJXMeshcatVisualizer:
             self.update()
             while time.perf_counter() - start < dt:
                 pass
+
+    def draw_action_samples(self, action_knots: np.ndarray):
+        """Draw lines representing actions"""
+
+        self.clear_action_samples()
+
+        n_knots = action_knots.shape[0]
+        assert action_knots.shape == (n_knots, 2, 18)
+
+        # TODO: make gin-config param
+        fingertip_body_names = ["finger_0", "finger_1"]
+
+        for knot_idx in range(n_knots):
+            for finger_idx, finger_name in enumerate(fingertip_body_names):
+                start_loc = action_knots[
+                    knot_idx, 0, (finger_idx * 3) : ((finger_idx + 1) * 3)
+                ]
+                end_loc = action_knots[
+                    knot_idx, 1, (finger_idx * 3) : ((finger_idx + 1) * 3)
+                ]
+                vertices = np.stack([start_loc, end_loc], axis=1)
+                assert vertices.shape == (3, 2), str(vertices.shape)
+                draw_geom = geometry.LineSegments(
+                    geometry.PointsGeometry(position=vertices.astype(np.float32)),
+                    geometry.LineBasicMaterial(
+                        color=(0x19E6E6 if finger_idx == 0 else 0xE619E6)
+                    ),
+                )
+                self._meshcat["actions"][f"{knot_idx}"][f"{finger_name}"].set_object(
+                    draw_geom
+                )
+
+    def clear_action_samples(self):
+        """Clear lines from action samples"""
+        self._meshcat["actions"].delete()

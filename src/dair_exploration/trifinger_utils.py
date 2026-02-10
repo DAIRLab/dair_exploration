@@ -6,10 +6,8 @@ The main contents of this file are as follows:
 
         * Class to handle LCM communication with the robot
 """
-
-from dataclasses import dataclass, field
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import gin
 import jax
@@ -18,7 +16,7 @@ import lcm
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from dair_pll.lcmtypes.dairlib import (
+from dair_exploration.lcmtypes.dairlib import (
     lcmt_fingertips_position,
     lcmt_object_state,
     lcmt_densetact_measurement_data,
@@ -168,7 +166,13 @@ class TrifingerLCMService:
         densetact_dt = np.expand_dims(
             densetact_time_s[1:] - densetact_time_s[:-1], axis=-1
         )
-        fn_prune = lambda arr: jnp.concatenate([arr[:1], arr[1:][np.nonzero(densetact_dt.flatten())]])
+
+        def fn_prune(arr):
+            """Prune duplicate dts"""
+            return jnp.concatenate(
+                [arr[:1], arr[1:][np.nonzero(densetact_dt.flatten())]]
+            )
+
         fingerpos_time_s = np.array(
             [
                 float(measurement.utime) / 1e6
@@ -207,23 +211,22 @@ class TrifingerLCMService:
 
             # Velocity Interpolation
             # DONT DO: Just take average velocity, backwards Euler
-            """
-            body_vel = np.array(
-                [
-                    measurement.curVel[3 * body_idx : 3 * body_idx + 3]
-                    for measurement in self._fingertip_pose_raw_data
-                ]
-            )
-            assert body_vel.shape == (len(fingerpos_time_s), 3)
-            body_vel_interp = np.vstack(
-                [
-                    np.interp(densetact_time_s, fingerpos_time_s, body_vel[:, idx])
-                    for idx in range(3)
-                ]
-            ).T
-            assert body_vel_interp.shape == (len(densetact_time_s), 3)
-            fingertip_vel_w[body_name] = body_vel_interp
-            """
+            # body_vel = np.array(
+            #     [
+            #         measurement.curVel[3 * body_idx : 3 * body_idx + 3]
+            #         for measurement in self._fingertip_pose_raw_data
+            #     ]
+            # )
+            # assert body_vel.shape == (len(fingerpos_time_s), 3)
+            # body_vel_interp = np.vstack(
+            #     [
+            #         np.interp(densetact_time_s, fingerpos_time_s, body_vel[:, idx])
+            #         for idx in range(3)
+            #     ]
+            # ).T
+            # assert body_vel_interp.shape == (len(densetact_time_s), 3)
+            # fingertip_vel_w[body_name] = body_vel_interp
+
             fingertip_vel_w[body_name] = np.zeros_like(fingertip_pos_w[body_name])
             fingertip_vel_w[body_name][1:] = (
                 fingertip_pos_w[body_name][1:] - fingertip_pos_w[body_name][:-1]
@@ -287,9 +290,15 @@ class TrifingerLCMService:
             ret[body_name] = {}
             ret[body_name]["position"] = fn_prune(jnp.array(fingertip_pos_w[body_name]))
             ret[body_name]["velocity"] = fn_prune(jnp.array(fingertip_vel_w[body_name]))
-            ret[body_name]["contact_force_C"] = fn_prune(jnp.array(fingertip_force_c[body_name]))
-            ret[body_name]["contact_force_W"] = fn_prune(jnp.array(fingertip_force_w[body_name]))
-            ret[body_name]["contact_normal_W"] = fn_prune(jnp.array(fingertip_normal_w[body_name]))
+            ret[body_name]["contact_force_C"] = fn_prune(
+                jnp.array(fingertip_force_c[body_name])
+            )
+            ret[body_name]["contact_force_W"] = fn_prune(
+                jnp.array(fingertip_force_w[body_name])
+            )
+            ret[body_name]["contact_normal_W"] = fn_prune(
+                jnp.array(fingertip_normal_w[body_name])
+            )
 
         # Interp ground-truth object data
         if len(self._object_raw_data) > 0:
@@ -330,6 +339,6 @@ class TrifingerLCMService:
         # Return
         # Prune repeat timestamps
         # Already done by fn_prune
-        #ret_pruned = jnp.concatenate([ret[:1], ret[1:][np.nonzero(densetact_dt.flatten())]])
+        # ret_pruned = jnp.concatenate([ret[:1], ret[1:][np.nonzero(densetact_dt.flatten())]])
         print(f"Number of unique samples: {len(ret[time])}")
         return ret

@@ -29,6 +29,9 @@ def get_outputs(
 
     forward_data = mjx_util.jit_forward(param_model, param_data)
 
+    # MJX requires access via _impl
+    # pylint: disable=protected-access
+
     return {
         "phi": forward_data._impl.contact.dist[..., contact_ids],
         "normal": forward_data._impl.contact.frame[..., contact_ids, 0, :],
