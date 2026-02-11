@@ -68,11 +68,12 @@ class TrifingerLCMService:
 
     @property
     def fingertip_geom_names(self):
-        """Fingertip body names"""
+        """Fingertip geom names"""
         return self._fingertip_geom_names
 
     @property
     def object_geom_name(self):
+        """True object geom name"""
         return self._object_geom_name
 
     def get_current_object_pose(self) -> np.ndarray:

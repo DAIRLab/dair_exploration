@@ -13,12 +13,15 @@ from mujoco import mjx
 import numpy as np
 
 from dair_exploration.gui_util import MJXMeshcatVisualizer
-from dair_exploration.file_util import get_config
+from dair_exploration.file_util import get_config, enable_jax_cache
 from dair_exploration import mjx_util
 
 
 def test_gui():
     """GUI Test"""
+    # Tests can be arbitrarily long
+    # pylint: disable=too-many-locals
+    enable_jax_cache()
     mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf").as_posix())
     mjx_model = mjx.put_model(mj_model)
     dt = float(mj_model.opt.timestep)
@@ -27,7 +30,6 @@ def test_gui():
     mujoco.mj_step(mj_model, mj_data)
     mjx_data = mjx.put_data(mj_model, mj_data)
     ctrl = jnp.zeros((nstep, len(mjx_data.ctrl)))
-    ctrl_v2 = jnp.zeros((nstep * 2, len(mjx_data.ctrl)))
     ctrl_cpu = np.zeros((nstep, len(mjx_data.ctrl)))
     print("Running initial sim compilation...", end="", flush=True)
     start = time.time()
@@ -45,8 +47,8 @@ def test_gui():
     print(f"done in {time.time()-start}s")
     print("Starting Meshcat...")
     vis = MJXMeshcatVisualizer(mjx_model, mjx_data)
-    xposes = np.zeros((nstep,) + mj_data.xpos.shape)
-    xmats = np.zeros((nstep,) + mj_data.xmat.shape)
+    xposes = np.zeros((nstep,) + mjx_data.xpos.shape)
+    xmats = np.zeros((nstep,) + mjx_data.xmat.shape)
     print("Simulating 2s on CPU...", end="", flush=True)
     start = time.time()
     for idx in range(nstep):

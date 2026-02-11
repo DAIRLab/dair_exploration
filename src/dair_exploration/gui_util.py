@@ -22,7 +22,7 @@ class MJXMeshcatVisualizer:
     Meshcat Comparison Visualization
     """
 
-    _meshcat: meshcat.Visualizer
+    _meshcat: meshcat.Visualizer = None
     _model: mjx.Model
     _data: list[mjx.Data]
     _trajs: Optional[dict[int, jax.Array]]

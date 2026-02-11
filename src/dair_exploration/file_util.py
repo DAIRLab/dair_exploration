@@ -40,13 +40,12 @@ def get_config(file: str) -> Path:
 
 
 @gin.configurable
-def results_dir(name: str = "run") -> Path:
+def results_dir(
+    name: str = "run",
+    datestr: str = datetime.datetime.now().replace(microsecond=0).isoformat(),
+) -> Path:
     """Get config from hard-coded config directory"""
-    result_path = (
-        repo_dir()
-        / "results"
-        / f"{datetime.datetime.now().replace(microsecond=0).isoformat()}_{name}"
-    )
+    result_path = repo_dir() / "results" / f"{datestr}_{name}"
     result_path.mkdir(parents=True, exist_ok=True)
     return result_path
 

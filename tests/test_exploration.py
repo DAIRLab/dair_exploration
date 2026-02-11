@@ -7,19 +7,18 @@ import time
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.spatial.transform import Rotation
 import mujoco
 from mujoco import mjx
-import numpy as np
 
-from dair_exploration.gui_util import MJXMeshcatVisualizer
 from dair_exploration.file_util import get_config, enable_jax_cache
 from dair_exploration import mjx_util
 from dair_exploration import exploration
 
 
 def test_exploration():
-    """GUI Test"""
+    """Exploration Algorithm Test"""
+    # Tests can be arbitrarily long
+    # pylint: disable=too-many-locals
     enable_jax_cache()
     mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf"))
     mjx_model = mjx.put_model(mj_model)
@@ -53,14 +52,12 @@ def test_exploration():
     )
     print("Expected Info w/ ctrl1 (zeros)...", end="", flush=True)
     start = time.time()
-    out1 = jit_info(ctrl1, params, traj_qpos_params, mjx_data, mjx_model, contact_ids)
+    jit_info(ctrl1, params, traj_qpos_params, mjx_data, mjx_model, contact_ids)
     print(f"done in {time.time()-start}s")
     print("Expected Info w/ ctrl2 (random)...", end="", flush=True)
     start = time.time()
-    out2 = jit_info(ctrl2, params, traj_qpos_params2, mjx_data2, mjx_model, contact_ids)
+    jit_info(ctrl2, params, traj_qpos_params2, mjx_data2, mjx_model, contact_ids)
     print(f"done in {time.time()-start}s")
-
-    breakpoint()
 
 
 if __name__ == "__main__":

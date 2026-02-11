@@ -7,7 +7,6 @@ import argparse
 import pdb
 import signal
 import time
-from typing import Optional
 
 import gin
 import jax.numpy as jnp
@@ -27,22 +26,10 @@ from dair_exploration.gui_util import MJXMeshcatVisualizer
 from dair_exploration.trifinger_utils import TrifingerLCMService
 from dair_exploration.action_utils import (
     ActionWorkspaceParams,
-    ActionCEM,
     action_to_knots,
     interpolate_knots,
 )
-
-## Handle SIGINT
-signal_pressed = False
-
-
-def signal_handler(_sig, _frame):
-    """Handle SIGINT"""
-    # pylint: disable=global-statement
-    global signal_pressed
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal_pressed = True
-    signal.signal(signal.SIGINT, signal_handler)
+from dair_exploration.data_util import TrajectorySet
 
 
 ## Main Function
@@ -50,10 +37,10 @@ def signal_handler(_sig, _frame):
 def main(
     config_file: str,
     model_file: str,
-):
+) -> None:
     """Main function for online learning loop"""
 
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-statements
 
     # Debug: Remove scientific notation for numpy printing
     np.set_printoptions(suppress=True)
@@ -61,8 +48,14 @@ def main(
     print("Active Tactile Exploration")
 
     # Handle SIGINT
-    global signal_pressed
     signal_pressed = False
+
+    def signal_handler(_sig, _frame):
+        nonlocal signal_pressed
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal_pressed = True
+        signal.signal(signal.SIGINT, signal_handler)
+
     signal.signal(signal.SIGINT, signal_handler)
 
     # Create results directory
@@ -89,7 +82,7 @@ def main(
     mjx_init_data = mjx.make_data(mjx_model)
 
     # Sample initial action (from true obj pose)
-    action_cem = ActionCEM(action_params)
+    # action_cem = ActionCEM(action_params)
     selected_action = action_params.random_action()
     selected_knots = np.stack(
         [action_params.get_reset_knot(), action_params.get_reset_knot()]
@@ -123,6 +116,9 @@ def main(
         },
     )
     gui_vis.draw_action_samples(selected_knots[np.newaxis, :, :])
+
+    # Create trajectory set
+    dataset = TrajectorySet()
 
     # Start Input Loop
     def print_help():
@@ -184,21 +180,22 @@ def main(
                 )
 
             # Write data to TrajectorySet
+            dataset.add_trajectory(new_trajectory)
 
-            # Visualize New Data
+            # Visualize Complete Data
             gui_vis.update_visuals(
                 mjx_model,
                 [mjx_util.jit_forward(mjx_model, mjx_init_data)]
-                * len(new_trajectory["time"]),
+                * len(dataset.full_trajectory()["time"]),
                 {
                     trifinger_lcm.object_geom_name: [
                         (
                             row[4:],
                             Rotation.from_quat(row[:4], scalar_first=True),
                         )
-                        for row in new_trajectory[trifinger_lcm.object_geom_name][
-                            "position"
-                        ]
+                        for row in dataset.full_trajectory()[
+                            trifinger_lcm.object_geom_name
+                        ]["position"]
                     ],
                 }
                 | {
@@ -207,13 +204,16 @@ def main(
                             row,
                             Rotation.identity(),
                         )
-                        for row in new_trajectory[geom_name]["position"]
+                        for row in dataset.full_trajectory()[geom_name]["position"]
                     ]
                     for geom_name in trifinger_lcm.fingertip_geom_names
                 },
             )
 
             ## END Collect New Data
+        if signal_pressed:
+            print("Ctrl-C pressed and not cleared, exiting!")
+            break
 
     # Quit
     print("Done!")

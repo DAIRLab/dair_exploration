@@ -241,10 +241,12 @@ def diffsim_overwrite(
 
     return ret_list[1:]
 
+
 def data_unstack(data: mjx.Data) -> list[mjx.Data]:
     """Unstack a data object with a batch dimension into a list of mjx datas"""
     leaves, treedef = jax.tree.flatten(data)
     return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
+
 
 @jax.jit
 def diffsim(

@@ -201,6 +201,16 @@ class ActionCEM:
 
         self._rng = np.random.default_rng()
 
+    @property
+    def return_style(self):
+        """Get the return style of the CEM"""
+        return self._return_style
+
+    @return_style.setter
+    def return_style(self, value):
+        """Set the return style of the CEM"""
+        self._return_style = value
+
     def best_action(
         self,
         score_fn: Callable[[list[Action]], list[float]],
