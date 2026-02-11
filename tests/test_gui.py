@@ -19,7 +19,7 @@ from dair_exploration import mjx_util
 
 def test_gui():
     """GUI Test"""
-    mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf"))
+    mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf").as_posix())
     mjx_model = mjx.put_model(mj_model)
     dt = float(mj_model.opt.timestep)
     nstep = int(2.0 / dt)
@@ -27,6 +27,7 @@ def test_gui():
     mujoco.mj_step(mj_model, mj_data)
     mjx_data = mjx.put_data(mj_model, mj_data)
     ctrl = jnp.zeros((nstep, len(mjx_data.ctrl)))
+    ctrl_v2 = jnp.zeros((nstep * 2, len(mjx_data.ctrl)))
     ctrl_cpu = np.zeros((nstep, len(mjx_data.ctrl)))
     print("Running initial sim compilation...", end="", flush=True)
     start = time.time()
@@ -73,12 +74,12 @@ def test_gui():
 
     print("Simulating 2s...", end="", flush=True)
     start = time.time()
-    data_stacked = compiled_diffsim(mjx_model, mjx_data, ctrl)
+    data_list = compiled_diffsim(mjx_model, mjx_data, ctrl)
     print(f"done in {time.time()-start}s")
-    print("Unstacking data...", end="", flush=True)
-    start = time.time()
-    data_list = mjx_util.data_unstack(data_stacked)
-    print(f"done in {time.time()-start}s")
+    # print("Unstacking data...", end="", flush=True)
+    # start = time.time()
+    # data_list = mjx_util.data_unstack(data_stacked)
+    # print(f"done in {time.time()-start}s")
 
     print("Writing to Meshcat...")
     true_traj = {

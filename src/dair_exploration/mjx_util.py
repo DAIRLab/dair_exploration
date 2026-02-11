@@ -241,18 +241,17 @@ def diffsim_overwrite(
 
     return ret_list[1:]
 
-
 def data_unstack(data: mjx.Data) -> list[mjx.Data]:
     """Unstack a data object with a batch dimension into a list of mjx datas"""
     leaves, treedef = jax.tree.flatten(data)
     return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
-
 
 @jax.jit
 def diffsim(
     model: mjx.Model,
     init_data: mjx.Data,
     ctrl: jax.Array,
+    stacked: bool = False,
 ) -> list[mjx.Data]:
     """Simulate from init_data
 
@@ -270,4 +269,4 @@ def diffsim(
 
     _, data_stacked = jax.lax.scan(_sim_step, init_data, ctrl)
 
-    return data_stacked
+    return data_stacked if stacked else data_unstack(data_stacked)
