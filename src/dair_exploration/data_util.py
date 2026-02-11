@@ -16,8 +16,6 @@ import jax.numpy as jnp
 
 from dair_exploration.file_util import write_object
 
-## Action / Workspace Parameters
-
 
 @gin.configurable
 class TrajectorySet:

@@ -7,12 +7,12 @@ import time
 
 import jax
 import jax.numpy as jnp
-import mujoco
 from mujoco import mjx
 
-from dair_exploration.file_util import get_config, enable_jax_cache
+from dair_exploration.file_util import enable_jax_cache
 from dair_exploration import mjx_util
 from dair_exploration import exploration
+from dair_exploration.learning import LearnedModel
 
 
 def test_exploration():
@@ -20,9 +20,9 @@ def test_exploration():
     # Tests can be arbitrarily long
     # pylint: disable=too-many-locals
     enable_jax_cache()
-    mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf"))
-    mjx_model = mjx.put_model(mj_model)
-    dt = float(mj_model.opt.timestep)
+    learned_model = LearnedModel("default.mjcf", {"object-geom": ["size"]})
+    mjx_model = learned_model.active_model
+    dt = float(mjx_model.opt.timestep)
     nstep = int(2.0 / dt)
     print("Sim compilation...", end="", flush=True)
     start = time.time()
@@ -32,7 +32,7 @@ def test_exploration():
     ctrl1 = jnp.zeros((100, nstep, len(mjx_data.ctrl)))
     ctrl2 = jax.random.uniform(jax.random.key(0), ctrl1.shape)
 
-    params = mjx_util.populate_parameter_dict(mjx_model, {"object-geom": ["size"]})
+    params = learned_model.params
     traj_qpos_params = {
         "object-geom": mjx_data.qpos[
             mjx_util.qposidx_from_geom_name(mjx_model, "object-geom")
@@ -47,9 +47,11 @@ def test_exploration():
         mjx_model, mjx_data, ["spherebot1-geom", "spherebot2-geom"], ["object-geom"]
     )
 
-    jit_info = jax.jit(
-        jax.vmap(exploration.expected_info, in_axes=(0, None, None, None, None, None))
+    # jit_info = jax.jit(
+    jit_info = jax.vmap(
+        exploration.expected_info, in_axes=(0, None, None, None, None, None)
     )
+    # )
     print("Expected Info w/ ctrl1 (zeros)...", end="", flush=True)
     start = time.time()
     jit_info(ctrl1, params, traj_qpos_params, mjx_data, mjx_model, contact_ids)

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 
 """
-Learning Functions
+Exploration w/ EIG Functions
 """
-
-from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +10,7 @@ from mujoco import mjx
 import numpy as np
 
 from dair_exploration import mjx_util
+from dair_exploration.learning import LearnedModel
 
 
 ## Function to compute outputs from parameters
@@ -25,7 +24,7 @@ def get_outputs(
     """Compute outputs (phi and normals) from data"""
     # write pose and params to model/data
     param_data = data.replace(qpos=qpos)
-    param_model = mjx_util.write_params_to_model(base_model, params)
+    param_model = LearnedModel.write_params_to_model(params, base_model)
 
     forward_data = mjx_util.jit_forward(param_model, param_data)
 
@@ -70,7 +69,7 @@ def expected_info(
     data_current = mjx_util.write_qpos_to_data(base_model, base_data, traj_qpos_params)
 
     # Sim Forward
-    data_stacked = mjx_util.diffsim(base_model, data_current, ctrl)
+    data_stacked = mjx_util.diffsim(base_model, data_current, ctrl, stacked=True)
 
     # Get Outputs
     outputs = jit_outputs(

@@ -64,3 +64,12 @@ def write_object(obj: Any, subdir: str, out_name: str) -> None:
     with (sub_results_dir / out_name).open("wb") as file:
         pickle.dump(obj, file)
     print(f"Object written to {(sub_results_dir / out_name).as_posix()}")
+
+
+def write_text(text: str, subdir: str, out_name: str) -> None:
+    """Write an object into the run directory"""
+    sub_results_dir = results_dir() / subdir
+    sub_results_dir.mkdir(parents=True, exist_ok=True)
+    with (sub_results_dir / out_name).open("w") as file:
+        file.write(text)
+    print(f"Text written to {(sub_results_dir / out_name).as_posix()}")

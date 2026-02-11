@@ -4,6 +4,8 @@
 Utilities for Mujoco XLA / JAX
 """
 
+from functools import partial
+
 import jax
 
 from mujoco import mjx
@@ -109,58 +111,6 @@ def contactids_from_collision_geoms(
 
 
 ## Parameter Utilities
-def populate_parameter_dict(base_model: mjx.Model, param_names: dict[str, list[str]]):
-    """
-    Populates a parameter dictionary with values from the base model.
-
-    Args:
-        base_model: model with the initial guess
-        param_names: maps geom_name to list of parameters
-    Returns:
-        dict[str, dict[str, jax.Array]] of populated parameters
-    """
-    # TODO: Add Body Parameters (Mass / COM / Inertia)
-    ret = {}
-    for geom_name in param_names.keys():
-        ret[geom_name] = {}
-        geomid = geomid_from_geom_name(base_model, geom_name)
-        for param in param_names[geom_name]:
-            if param == "size":
-                ret[geom_name][param] = base_model.geom_size[geomid].copy()
-            elif param == "friction":
-                ret[geom_name][param] = base_model.geom_friction[geomid].copy()
-            elif param == "friction.sliding":
-                ret[geom_name][param] = base_model.geom_friction[geomid, 0].copy()
-            else:
-                raise NotImplementedError(f"No implementation for parameter {param}")
-    return ret
-
-
-def write_params_to_model(
-    base_model: mjx.Model, params: dict[str, dict[str, jax.Array]]
-) -> mjx.Model:
-    """Returns a model with the parameters replaced."""
-    model = base_model
-    for geom_name in params.keys():
-        geomid = geomid_from_geom_name(base_model, geom_name)
-        for param_name, param in params[geom_name].items():
-            if param_name == "size":
-                model = model.replace(geom_size=model.geom_size.at[geomid].set(param))
-            elif param_name == "friction":
-                model = model.replace(
-                    geom_friction=model.geom_friction.at[geomid].set(param)
-                )
-            elif param_name == "friction.sliding":
-                model = model.replace(
-                    geom_friction=model.geom_friction.at[geomid, 0].set(param)
-                )
-            else:
-                raise NotImplementedError(
-                    f"No implementation for parameter {param_name}"
-                )
-    return model
-
-
 def write_qpos_to_data(
     base_model: mjx.Model, base_data: mjx.Data, traj_qpos: dict[str, jax.Array]
 ) -> mjx.Data:
@@ -248,7 +198,7 @@ def data_unstack(data: mjx.Data) -> list[mjx.Data]:
     return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
 
-@jax.jit
+@partial(jax.jit, static_argnames="stacked")
 def diffsim(
     model: mjx.Model,
     init_data: mjx.Data,
