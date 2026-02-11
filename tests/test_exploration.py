@@ -47,15 +47,25 @@ def test_exploration():
         mjx_model, mjx_data, ["spherebot1-geom", "spherebot2-geom"], ["object-geom"]
     )
 
-    # jit_info = jax.jit(
-    jit_info = jax.vmap(
-        exploration.expected_info, in_axes=(0, None, None, None, None, None)
+    jit_info = jax.jit(
+        jax.vmap(exploration.expected_info, in_axes=(0, None, None, None, None, None))
     )
-    # )
     print("Expected Info w/ ctrl1 (zeros)...", end="", flush=True)
     start = time.time()
     jit_info(ctrl1, params, traj_qpos_params, mjx_data, mjx_model, contact_ids)
     print(f"done in {time.time()-start}s")
+
+    # Redundantly write to model
+    # Should NOT cause a re-trace! Test w/ breakpoint()
+    mjx_model = LearnedModel.write_params_to_model(params, mjx_model)
+
+    # Modify nparray in model
+    # SHOULD cause a re-trace! Test w/ breakpoint()
+    # import numpy as np
+    # test = np.copy(mjx_model.mesh_vert)
+    # test[0, 0] = 5.0
+    # mjx_model = mjx_model.replace(mesh_vert=test)
+
     print("Expected Info w/ ctrl2 (random)...", end="", flush=True)
     start = time.time()
     jit_info(ctrl2, params, traj_qpos_params2, mjx_data2, mjx_model, contact_ids)
