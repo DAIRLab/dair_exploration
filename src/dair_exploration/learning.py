@@ -16,15 +16,7 @@ import mujoco
 from mujoco import mjx
 import numpy as np
 
-from dair_exploration import file_util, mjx_util
-
-
-@gin.constants_from_enum
-class LossStyle(Enum):
-    """Loss Style"""
-
-    DIFFSIM = 0
-    VIMP = 1
+from dair_exploration import file_util, mjx_util, data_util
 
 
 @gin.configurable
@@ -258,13 +250,53 @@ class LearnedTrajectory(Sequence):
         file_util.write_object(self._params, "learning", f"traj_{traj_name}.pkl")
 
 
-# def loss_vimp(
-#     params: dict[str, dict[str, jax.Array]],
-#     traj_params: dict[str, tuple[jax.Array, jax.Array]],
-#     data: dict[str, jax.Array],
-#     base_model: mjx.Model,
-# ) -> jax.Array:
-#     # TODO: write params to base_model
-#     # TODO: combine traj_params / data into trajectory
-#     # TODO:
-#     pass
+@gin.constants_from_enum
+class LossStyle(Enum):
+    """Loss Style"""
+
+    DIFFSIM = 0
+    VIMP = 1
+
+
+@jax.jit
+def loss_diffsim(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    active_model: mjx.Model,
+) -> jax.Array:
+    """Diffsim loss function for training
+
+    Parameters:
+        * params: tuple of (model_params, traj_param)
+        * * where traj_param is specifically q0 for each learnable geometry
+        * measurements: contact and robot proprioception and control data,
+        * * as a full trajectory (not a list of trajectories)
+        * active_model: the mjx model in which to create data and write params
+    """
+    pass
+
+
+@gin.configurable(allowlist=["loss_style"])
+def train_epochs(
+    learned_model: LearnedModel,
+    learned_traj: LearnedTrajectory,
+    measurements: data_util.TrajectorySet,
+    n_epochs: int,
+    epoch_start: int = 0,
+    loss_style: LossStyle = LossStyle.DIFFSIM,
+) -> None:  # TODO: return loss statistics
+    """Train and update the learned model and trajectory on the measurements.
+
+        * Initialize optax (gin-configured).
+        Foreach epoch in range(epoch_start, epoch_start + n_epochs):
+        ** Pull parameters from learned model/traj
+        ** Call gin-configured loss function and gradient (jax-traceably)
+        ** Use optax to update parameters
+        ** Write new parameters to the learned model / traj
+        ** Write new parameters to file
+        ** TODO: Record loss statistics and write to file
+        * If Ctrl-C is called, finish current epoch and return
+
+    Return (TODO) loss statistics; Learned Model/Trajectory are mutated.
+    """
+    loss_fn = loss_diffsim  # TODO: switch based on lossstyle
