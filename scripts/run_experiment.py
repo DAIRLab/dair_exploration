@@ -30,6 +30,7 @@ from dair_exploration.action_utils import (
     interpolate_knots,
 )
 from dair_exploration.data_util import TrajectorySet
+from dair_exploration.learning import LearnedTrajectory, LearnedModel
 
 
 ## Main Function
@@ -75,11 +76,14 @@ def main(
     new_trajectory = None
 
     # Create learnable system
-    print("JIT Mujoco XLA Step...")
-    mjx_model = mjx.put_model(
-        mujoco.MjModel.from_xml_path(get_config(model_file).as_posix())
-    )
-    mjx_init_data = mjx.make_data(mjx_model)
+    # Pylint doesn't know about gin
+    # pylint: disable-next=no-value-for-parameter
+    learned_model = LearnedModel()
+    learned_model.write_to_file("init")
+    # Pylint doesn't know about gin
+    # pylint: disable-next=no-value-for-parameter
+    learned_traj = LearnedTrajectory(base_model=learned_model.active_model)
+    learned_traj.write_to_file("init")
 
     # Sample initial action (from true obj pose)
     # action_cem = ActionCEM(action_params)
@@ -100,12 +104,20 @@ def main(
     # selected_knots[:, :3] = first_knots[:, :3]
 
     # GUI Visualization
+    print("JIT Mujoco XLA Step...")
     gui_vis = MJXMeshcatVisualizer(
-        mjx_model, mjx_util.jit_forward(mjx_model, mjx_init_data)
+        learned_model.active_model,
+        mjx_util.jit_forward(
+            learned_model.active_model, mjx.make_data(learned_model.active_model)
+        ),
     )
     gui_vis.update_visuals(
-        mjx_model,
-        [mjx_util.jit_forward(mjx_model, mjx_init_data)],
+        learned_model.active_model,
+        [
+            mjx_util.jit_forward(
+                learned_model.active_model, mjx.make_data(learned_model.active_model)
+            )
+        ],
         {
             trifinger_lcm.object_geom_name: [
                 (
@@ -184,8 +196,13 @@ def main(
 
             # Visualize Complete Data
             gui_vis.update_visuals(
-                mjx_model,
-                [mjx_util.jit_forward(mjx_model, mjx_init_data)]
+                learned_model.active_model,
+                [
+                    mjx_util.jit_forward(
+                        learned_model.active_model,
+                        mjx.make_data(learned_model.active_model),
+                    )
+                ]
                 * len(dataset.full_trajectory()["time"]),
                 {
                     trifinger_lcm.object_geom_name: [

@@ -6,6 +6,9 @@ The main contents of this file are as follows:
 
     * Class to hold and manage learnable parameters
 """
+from collections.abc import Sequence
+from enum import Enum
+
 import gin
 import jax
 import jax.numpy as jnp
@@ -14,6 +17,14 @@ from mujoco import mjx
 import numpy as np
 
 from dair_exploration import file_util, mjx_util
+
+
+@gin.constants_from_enum
+class LossStyle(Enum):
+    """Loss Style"""
+
+    DIFFSIM = 0
+    VIMP = 1
 
 
 @gin.configurable
@@ -160,8 +171,91 @@ class LearnedModel:
         return model
 
 
-# class LearnedTrajectory:
-#     pass
+class TrajParamKey(Enum):
+    """Key for the parameter dictionary"""
+
+    Q0 = 0
+    TRAJQ = 1
+    TRAJV = 2
+
+
+@gin.configurable(denylist=["base_model"])
+class LearnedTrajectory(Sequence):
+    """Learned Trajectory Parameters
+
+    dict["object_geom_name", dict[(Q0/Q/V), jax.Array]
+    Where for trajectory X[t], the states are:
+    (Q0[t]/0, Q[t]/V[t], Q0[t+1]/0)
+    """
+
+    _params: dict[str, dict[TrajParamKey, list[jax.Array]]]
+    r"""Current object trajectory parameters"""
+    _fixed_len: int
+    r"""Fixed length for each trajectory"""
+    _base_model: mjx.Model
+    r"""Base model used to help populate qpos/qvel"""
+
+    def __init__(
+        self, base_model: mjx.Model, geom_names: list[str], fixed_len: int = 0
+    ):
+        self._base_model = base_model
+        self._fixed_len = fixed_len
+        self._params = {}
+        assert len(geom_names) > 0
+        for geom_name in geom_names:
+            self._params[geom_name] = {}
+            qposids = mjx_util.qposidx_from_geom_name(base_model, geom_name)
+
+            # Initialize empty or Qpos0
+            self._params[geom_name][TrajParamKey.TRAJQ] = []
+            self._params[geom_name][TrajParamKey.TRAJV] = []
+            self._params[geom_name][TrajParamKey.Q0] = [
+                jnp.expand_dims(base_model.qpos0[qposids], axis=0)
+            ]
+
+    @property
+    def params(self):
+        """Raw parameter object"""
+        return self._params
+
+    def __len__(self):
+        """Number of trajectory parameters stored"""
+        return len(next(iter(self._params.values()))[TrajParamKey.TRAJQ])
+
+    def __getitem__(self, idx: int) -> jax.Array:
+        """Return a contiguous trajectory, if fixed_len pad the beginning w/ (Q0/0)"""
+        ret = {}
+        for geom_name, geom_traj in self._params.items():
+            pad_len = (
+                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ]) + 2)
+                if self._fixed_len > 0
+                else 0
+            )
+            ret[geom_name] = {}
+            ret[geom_name]["position"] = jnp.concatenate(
+                [
+                    jnp.repeat(
+                        geom_traj[TrajParamKey.Q0][idx],
+                        1 + pad_len,
+                        axis=0,
+                    ),
+                    geom_traj[TrajParamKey.TRAJQ],
+                    geom_traj[TrajParamKey.Q0][idx + 1],
+                ]
+            )
+            n_v = geom_traj[TrajParamKey.TRAJV][0].shape[-1]
+            ret[geom_name]["velocity"] = jnp.concatenate(
+                [
+                    jnp.repeat(jnp.zeros((1, len(n_v))), 1 + pad_len, axis=0),
+                    geom_traj[TrajParamKey.TRAJV],
+                    jnp.zeros((1, len(n_v))),
+                ]
+            )
+        return ret
+
+    def write_to_file(self, traj_name: str = "out"):
+        """Write current spec to file"""
+        file_util.write_object(self._params, "learning", f"traj_{traj_name}.pkl")
 
 
 # def loss_vimp(

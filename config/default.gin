@@ -9,19 +9,30 @@ NPI2 = -1.5707963267948966
 robot_radius = 0.01  # Add 1mm buffer on each robot for REAL only
 robot_buffer_radius = 0.012 #0.01575 from trifingeredu.urdf + buffer
 workspace_radius = 0.12
-object_geom_name = "true-geom"
+true_geom_name = "true-geom"
+learnable_geom_names = ["object-geom"]
 fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
 default_dt = 0.03333333333333333 # 30 Hz
 traj_len_s = 1.0 # s, how long each trajectory is
 traj_len_dts = 31 # 30Hz + 1
+model_file = "default.mjcf"
 
 ## Main Config
-main.model_file = "default.mjcf"
+main.model_file = %model_file
 results_dir.name = "wip"
 
+## Data Config
+fixed_traj_len = 50
+TrajectorySet.pad_to = %fixed_traj_len
+LearnedTrajectory.fixed_len = %fixed_traj_len
+LearnedTrajectory.geom_names = %learnable_geom_names
+LearnedModel.model_file = %model_file
+LearnedModel.param_spec = {"object-geom": ["size"]}
+
+
 ## Trifinger Utils Config
-TrifingerLCMService.fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
-TrifingerLCMService.object_geom_name = "true-geom"
+TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names
+TrifingerLCMService.object_geom_name = %true_geom_name
 TrifingerLCMService.traj_time_len = 1.0
 TrifingerLCMService.lcm_channels = {
 	"fingertips_position": "FINGERTIPS_POSITION_SIMULATION", # lcmt_fingertips_position "FINGERTIPS_POSITION"
