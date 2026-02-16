@@ -12,6 +12,7 @@ import gin
 import jax.numpy as jnp
 from mujoco import mjx
 import numpy as np
+import optax
 from scipy.spatial.transform import Rotation
 
 from dair_exploration import mjx_util
@@ -29,7 +30,7 @@ from dair_exploration.action_utils import (
     interpolate_knots,
 )
 from dair_exploration.data_util import TrajectorySet
-from dair_exploration.learning import LearnedTrajectory, LearnedModel
+from dair_exploration.learning import LearnedTrajectory, LearnedModel, train_epochs
 
 
 ## Main Function
@@ -73,6 +74,7 @@ def main(
     print("Resetting Trifinger Position...")
     trifinger_lcm.execute_trajectory(action_params.get_reset_knot(), no_data=True)
     new_trajectory = None
+    epochs = 0
 
     # Create learnable system
     # Pylint doesn't know about gin
@@ -144,6 +146,10 @@ def main(
     print_help()
     command_char = " "
     while command_char != "q":
+        if signal_pressed:
+            print("Ctrl-C pressed and not cleared, exiting!")
+            break
+
         command_char = input("Command $ ").split(" ")[0]
 
         if command_char == "h":
@@ -179,16 +185,19 @@ def main(
                 jnp.array(selected_knots), new_trajectory["time"]
             )
             n_q = ctrl_total.shape[-1] // 2
+            ctrlqs = []
+            ctrlvs = []
             for geom_idx, geom_name in enumerate(trifinger_lcm.fingertip_geom_names):
+                ctrlqs.append(ctrl_total[:, geom_idx * 3 : (geom_idx + 1) * 3])
+                ctrlvs.append(
+                    ctrl_total[:, (n_q + geom_idx * 3) : (n_q + (geom_idx + 1) * 3)]
+                )
                 new_trajectory[geom_name]["ctrl"] = np.concatenate(
-                    [
-                        ctrl_total[:, geom_idx * 3 : (geom_idx + 1) * 3],
-                        ctrl_total[
-                            :, (n_q + geom_idx * 3) : (n_q + (geom_idx + 1) * 3)
-                        ],
-                    ],
+                    [ctrlqs[-1], ctrlvs[-1]],
                     axis=-1,
                 )
+            # TODO: assumes trifinger order == mjcf actuator order!
+            new_trajectory["ctrl"] = jnp.concatenate(ctrlqs + ctrlvs, axis=-1)
 
             # Write data to TrajectorySet
             dataset.add_trajectory(new_trajectory)
@@ -227,9 +236,29 @@ def main(
             )
 
             ## END Collect New Data
-        if signal_pressed:
-            print("Ctrl-C pressed and not cleared, exiting!")
-            break
+
+        elif command_char == "t":
+            ## Train on data
+            if len(dataset) == 0:
+                print("Cannot train without data.\n")
+                continue
+
+            try:
+                n_epochs = int(input("How many epochs? "))
+            except ValueError:
+                print("Cancelling...")
+                continue
+            print("Training...")
+            train_epochs(
+                learned_model,
+                learned_traj,
+                dataset,
+                n_epochs,
+                epochs,
+            )
+            epochs = epochs + n_epochs
+
+            ## END Train on data
 
     # Quit
     print("Done!")
@@ -246,8 +275,10 @@ def main_fn():
     args = parser.parse_args()
 
     # Parse config file and start
+    # TODO: move gin external config to separate module
     gin.register(np.array, module="np")
     gin.register(np.random.uniform, module="np.random")
+    gin.register(optax.adam, module="optax")
     print(f"Loading Config File: {get_config(args.config_file)}")
     gin.parse_config_file(get_config(args.config_file))
     # Pylint doesn't know about gin

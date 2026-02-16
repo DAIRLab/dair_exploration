@@ -29,6 +29,9 @@ LearnedTrajectory.geom_names = %learnable_geom_names
 LearnedModel.model_file = %model_file
 LearnedModel.param_spec = {"object-geom": ["size"]}
 
+## Training Config
+train_epochs.optimizer_cls = @optax.adam
+optax.adam.learning_rate = 1e-3
 
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names

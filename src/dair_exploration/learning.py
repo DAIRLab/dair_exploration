@@ -294,12 +294,36 @@ def loss_diffsim(
         * Auxiliary data (e.g. individual loss / regularization terms)
     """
     # Write params to model and data objects
+    model = LearnedModel.write_params_to_model(params[0], active_model)
+    init_data = mjx_util.write_qpos_to_data(model, mjx.make_data(model), params[1])
+    # TODO NOW: write spherebot initial position to init_data
 
     # Run diffsim
+    data_sim = mjx_util.diffsim(
+        model, init_data, measurements["ctrl"], stacked=True
+    )  # mjx.Data w/ leading T dimension
 
     # Compute outputs (phi, normal)
+    assert len(params[1].keys()) == 1  # Only 1 object supported
+    contact_ids = {
+        geom_name: mjx_util.contactids_from_collision_geoms(
+            model, [geom_name], params[1].keys()
+        )
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
+    phis = {
+        geom_name: data_sim._impl.contact.dist[..., contact_ids]
+        for geom_name, contact_ids in contact_ids.items()
+    }
+    normals = {
+        geom_name: data_sim._impl.contact.frame[..., contact_ids, 0, :]
+        for geom_name, contact_ids in contact_ids.items()
+    }
 
     # Compare outputs to measurements for loss
+
+    breakpoint()
 
     return 0.0, {}
 
@@ -309,7 +333,7 @@ def loss_diffsim(
 def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     learned_model: LearnedModel,
     learned_traj: LearnedTrajectory,
-    measurements: data_util.TrajectorySet,
+    dataset: data_util.TrajectorySet,
     n_epochs: int,
     epoch_start: int = 0,
     loss_style: LossStyle = LossStyle.DIFFSIM,
@@ -340,10 +364,14 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     opt_state = optimizer.init(learning_params)
 
     for epoch in range(epoch_start, epoch_start + n_epochs):
+        loss_diffsim(
+            learning_params, dataset.full_trajectory(), learned_model.active_model
+        )
+        breakpoint()
         start = time.time()
         # Compute Loss + Grad
         (loss, _), grads = loss_fn(
-            learning_params, measurements, learned_model.active_model
+            learning_params, dataset.full_trajectory(), learned_model.active_model
         )
 
         # Gradient Step

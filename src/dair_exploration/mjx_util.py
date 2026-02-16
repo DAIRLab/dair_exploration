@@ -85,7 +85,6 @@ def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
 
 def contactids_from_collision_geoms(
     base_model: mjx.Model,
-    base_data: mjx.Data,
     sensor_geoms: list[str],
     object_geoms: list[str],
 ) -> np.ndarray:
@@ -95,6 +94,7 @@ def contactids_from_collision_geoms(
 
     # MJX requires access via _impl
     # pylint: disable=protected-access
+    base_data = jit_forward(base_model, mjx.make_data(base_model))
 
     return np.where(
         np.logical_or(

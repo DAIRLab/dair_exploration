@@ -280,7 +280,7 @@ class ActionCEM:
 def interpolate_knots(
     action_knots: jax.Array,
     timestamps: jax.Array,
-) -> np.ndarray:
+) -> jax.Array:
     """
     Interpolate knot points w/ cubic spline for provided timestamps
 
@@ -332,7 +332,7 @@ def interpolate_knots(
         + 3.0 * jnp.outer(jnp.pow(rel_timestamps, 2.0), spline_d)
     )
 
-    return np.concatenate([data_lerp, data_lerp_dot], axis=-1)
+    return jnp.concatenate([data_lerp, data_lerp_dot], axis=-1)
 
 
 @gin.configurable

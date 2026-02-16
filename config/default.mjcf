@@ -94,12 +94,12 @@
     <position joint="spherebot1-x" kp="20"/>
     <position joint="spherebot1-y" kp="20"/>
     <position joint="spherebot1-z" kp="20"/>
-    <velocity joint="spherebot1-x" kv="10"/>
-    <velocity joint="spherebot1-y" kv="10"/>
-    <velocity joint="spherebot1-z" kv="10"/>
     <position joint="spherebot2-x" kp="20"/>
     <position joint="spherebot2-y" kp="20"/>
     <position joint="spherebot2-z" kp="20"/>
+    <velocity joint="spherebot1-x" kv="10"/>
+    <velocity joint="spherebot1-y" kv="10"/>
+    <velocity joint="spherebot1-z" kv="10"/>
     <velocity joint="spherebot2-x" kv="10"/>
     <velocity joint="spherebot2-y" kv="10"/>
     <velocity joint="spherebot2-z" kv="10"/>
