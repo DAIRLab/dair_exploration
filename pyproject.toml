@@ -19,6 +19,7 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 dependencies = [
   "jax[cuda13]",
+  "optax",
   "mujoco-mjx",
   "gin-config", # Gin Configuration
   "warp-lang", # GPU Acceleration for Mujoco

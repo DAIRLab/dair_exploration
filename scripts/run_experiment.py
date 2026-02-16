@@ -10,7 +10,6 @@ import time
 
 import gin
 import jax.numpy as jnp
-import mujoco
 from mujoco import mjx
 import numpy as np
 from scipy.spatial.transform import Rotation

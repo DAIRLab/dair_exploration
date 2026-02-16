@@ -8,6 +8,7 @@ The main contents of this file are as follows:
 """
 from collections.abc import Sequence
 from enum import Enum
+import time
 
 import gin
 import jax
@@ -15,6 +16,7 @@ import jax.numpy as jnp
 import mujoco
 from mujoco import mjx
 import numpy as np
+import optax
 
 from dair_exploration import file_util, mjx_util, data_util
 
@@ -206,6 +208,21 @@ class LearnedTrajectory(Sequence):
             ]
 
     @property
+    def init_q(self) -> dict[str, jax.Array]:
+        """Initial position"""
+        return {
+            geom_name: geom_traj[TrajParamKey.Q0][0].squeeze()
+            for geom_name, geom_traj in self._params.items()
+        }
+
+    @init_q.setter
+    def init_q(self, value) -> None:
+        """New initial position"""
+        for geom_name, qpos0 in value.items():
+            assert len(qpos0) == self._params[geom_name][TrajParamKey.Q0][0].shape[-1]
+            self._params[geom_name][TrajParamKey.Q0][0] = jnp.expand_dims(qpos0, axis=0)
+
+    @property
     def params(self):
         """Raw parameter object"""
         return self._params
@@ -258,12 +275,11 @@ class LossStyle(Enum):
     VIMP = 1
 
 
-@jax.jit
 def loss_diffsim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
     active_model: mjx.Model,
-) -> jax.Array:
+) -> tuple[float, dict[str, jax.Array]]:
     """Diffsim loss function for training
 
     Parameters:
@@ -272,18 +288,33 @@ def loss_diffsim(
         * measurements: contact and robot proprioception and control data,
         * * as a full trajectory (not a list of trajectories)
         * active_model: the mjx model in which to create data and write params
+
+    Returns:
+        * Loss (scalar)
+        * Auxiliary data (e.g. individual loss / regularization terms)
     """
-    pass
+    # Write params to model and data objects
+
+    # Run diffsim
+
+    # Compute outputs (phi, normal)
+
+    # Compare outputs to measurements for loss
+
+    return 0.0, {}
 
 
-@gin.configurable(allowlist=["loss_style"])
-def train_epochs(
+# Lots of configuration (using gin) for training
+@gin.configurable(allowlist=["loss_style", "optimizer_cls", "vis_update"])
+def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     learned_model: LearnedModel,
     learned_traj: LearnedTrajectory,
     measurements: data_util.TrajectorySet,
     n_epochs: int,
     epoch_start: int = 0,
     loss_style: LossStyle = LossStyle.DIFFSIM,
+    optimizer_cls: optax.GradientTransformation = optax.adam,
+    vis_update: int = 0,
 ) -> None:  # TODO: return loss statistics
     """Train and update the learned model and trajectory on the measurements.
 
@@ -299,4 +330,36 @@ def train_epochs(
 
     Return (TODO) loss statistics; Learned Model/Trajectory are mutated.
     """
-    loss_fn = loss_diffsim  # TODO: switch based on lossstyle
+    # TODO: switch based on lossstyle
+    assert loss_style == LossStyle.DIFFSIM
+
+    # Configure loss, params, and optimizer
+    loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
+    learning_params = (learned_model.params, learned_traj.init_q)
+    optimizer = optimizer_cls()
+    opt_state = optimizer.init(learning_params)
+
+    for epoch in range(epoch_start, epoch_start + n_epochs):
+        start = time.time()
+        # Compute Loss + Grad
+        (loss, _), grads = loss_fn(
+            learning_params, measurements, learned_model.active_model
+        )
+
+        # Gradient Step
+        updates, opt_state = optimizer.update(grads, opt_state)
+        learning_params = optax.apply_updates(learning_params, updates)
+
+        # Update mutatable objects
+        learned_model.params, learned_traj.init_q = learning_params
+
+        # Visualization / File updates
+        if vis_update > 0 and epoch % vis_update == 0:
+            # TODO: add GUI visualization update
+            learned_model.write_to_file(f"{epoch:04d}")
+            learned_traj.write_to_file(f"{epoch:04d}")
+
+        # Print data
+        print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss:6.4f})")
+
+    ## END training loop
