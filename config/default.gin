@@ -33,7 +33,7 @@ LearnedModel.param_spec = {"object-geom": ["size"]}
 train_epochs.optimizer_cls = @optax.adam
 optax.adam.learning_rate = 1e-3
 train_epochs.loss_style = %LossStyle.DIFFSIM
-train_epochs.vis_update = 10
+train_epochs.vis_update = 1
 
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names

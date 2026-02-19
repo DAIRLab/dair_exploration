@@ -45,30 +45,35 @@ class MJXMeshcatVisualizer:
 
     def update_visuals(
         self,
-        model: mjx.Model,
-        data_trajectory: list[mjx.Data],
+        model: Optional[mjx.Model] = None,
+        data_trajectory: Optional[list[mjx.Data]] = None,
         traj_overwrite: Optional[dict[str, list[tuple[jax.Array, Rotation]]]] = None,
     ):
         """Update local parameters used in update()"""
 
         ### input validation
-        assert len(data_trajectory) > 0
-        for data in data_trajectory:
-            assert data.xpos.shape == (model.nbody, 3)
+        if data_trajectory is not None:
+            assert len(data_trajectory) > 0
+            for data in data_trajectory:
+                assert data.xpos.shape == (model.nbody, 3)
         if traj_overwrite is not None:
             for key, val in traj_overwrite.items():
                 assert (
                     model.names.find(key.encode()) in model.name_geomadr
                 ), f"{key} not in model"
-                assert len(val) == len(data_trajectory)
+                assert (
+                    len(val) == len(self._data)
+                    if data_trajectory is None
+                    else len(data_trajectory)
+                )
                 for subval in val:
                     assert len(subval[0]) == 3  # 3D Position
                     # Rotation enforced by type check
 
         # Parameter Overwrite
-        self._model = model
-        self._data = data_trajectory
-        self._trajs = traj_overwrite
+        self._model = model if model is not None else self._model
+        self._data = data_trajectory if data_trajectory is not None else self._data
+        self._trajs = traj_overwrite if traj_overwrite is not None else self._trajs
         self._scale.configure(to=float(len(self._data) - 1))
         self.update()
 

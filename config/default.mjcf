@@ -28,14 +28,14 @@
     </body>
 
     <!-- Body initial pose, initial guess -->
-    <body name="object" pos="0 0 0.02">
+    <body name="object" pos="0.1 0 0.01">
       <freejoint />
 
       <!-- Body Inertia properties, initial guess -->
       <inertial diaginertia="1 1 1" mass="0.5" pos="0 0 0"/>
 
       <!-- Body geometry, initial guess -->
-      <geom name="object-geom" type="box" size="0.02 0.02 0.02" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001"/>
+      <geom name="object-geom" type="box" size="0.01 0.01 0.01" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001"/>
       <!--<geom name="object-geom" type="mesh" mesh="tetrahedron" rgba="0.0 0.0 0.8 1.0" friction="0.05 0.005 0.0001" />-->
     </body>
 

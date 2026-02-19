@@ -407,7 +407,7 @@ def loss_diffsim(
 
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
-        loss,
+        (loss, data_sim),
     )
 
 
@@ -443,7 +443,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     # Configure loss, params, and optimizer
     # loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
-    # Diffsim needs forward-mode
+    # Diffsim needs forward-mode (and it is faster with long graphs)
     # see https://github.com/google-deepmind/mujoco/issues/2259
     loss_fn = jax.jit(jax.jacfwd(loss_diffsim, has_aux=True))
     learning_params = (learned_model.params, learned_traj.init_q)
@@ -453,7 +453,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     for epoch in range(epoch_start, epoch_start + n_epochs):
         start = time.time()
         # Compute Loss + Grad
-        grads, loss = loss_fn(
+        grads, (loss, data_sim) = loss_fn(
             learning_params, dataset.full_trajectory(), learned_model.base_model
         )
         loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss))
@@ -476,7 +476,9 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             learned_traj.write_to_file(f"{epoch:04d}")
             if gui_vis is not None:
                 print("\t Visualizing...")
-                # TODO: Add visualization of results
-                # breakpoint()
+                gui_vis.update_visuals(
+                    model=learned_model.active_model,
+                    data_trajectory=mjx_util.data_unstack(data_sim),
+                )
 
     ## END training loop
