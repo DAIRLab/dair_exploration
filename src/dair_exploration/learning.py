@@ -33,8 +33,8 @@ class LearnedModel:
     r"""Current object model parameters"""
     _active_spec: mujoco.MjSpec = None
     r"""Mujoco spec corresponding to current model parameters"""
-    _active_model: mjx.Model = None
-    r"""Cache of the active model associated with the current parameters"""
+    _base_model: mjx.Model = None
+    r"""Cache of the initial model"""
 
     def __init__(self, model_file: str, param_spec: dict[str, list[str]]):
         spec = mujoco.MjSpec.from_file(file_util.get_config(model_file).as_posix())
@@ -72,7 +72,7 @@ class LearnedModel:
                         f"No implementation for parameter {param}"
                     )
         self._active_spec = spec
-        self._active_model = mjx.put_model(self._active_spec.compile())
+        self._base_model = mjx.put_model(self._active_spec.compile())
 
     def write_to_file(self, model_name: str = "out"):
         """Write current spec to file"""
@@ -132,13 +132,15 @@ class LearnedModel:
                         f"No implementation for parameter {param_name}"
                     )
 
-        # Compile spec to model
-        self._active_model = mjx.put_model(self._active_spec.compile())
+    @property
+    def base_model(self):
+        """Model with initial parameters, use for training to avoid re-JIT"""
+        return self._base_model
 
     @property
     def active_model(self) -> mjx.Model:
         """Get model associated with current parameters"""
-        return self._active_model
+        return mjx.put_model(self._active_spec.compile())
 
     @staticmethod
     def write_params_to_model(
@@ -296,7 +298,7 @@ class LearningHyperparameters:
 def loss_diffsim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
-    active_model: mjx.Model,
+    base_model: mjx.Model,
     hyperparams: LearningHyperparameters = LearningHyperparameters(),
 ) -> tuple[float, dict[str, jax.Array]]:
     """Diffsim loss function for training
@@ -306,14 +308,14 @@ def loss_diffsim(
         * * where traj_param is specifically q0 for each learnable geometry
         * measurements: contact and robot proprioception and control data,
         * * as a full trajectory (not a list of trajectories)
-        * active_model: the mjx model in which to create data and write params
+        * base_model: the mjx model in which to create data and write params
 
     Returns:
         * Loss (scalar)
         * Auxiliary data (e.g. individual loss / regularization terms)
     """
     # Write params to model and data objects
-    model = LearnedModel.write_params_to_model(params[0], active_model)
+    model = LearnedModel.write_params_to_model(params[0], base_model)
     init_poses = dict(
         {
             geom_name: measurements[geom_name]["position"][0, :]
@@ -452,7 +454,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         start = time.time()
         # Compute Loss + Grad
         grads, loss = loss_fn(
-            learning_params, dataset.full_trajectory(), learned_model.active_model
+            learning_params, dataset.full_trajectory(), learned_model.base_model
         )
         loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss))
 
@@ -460,11 +462,11 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         updates, opt_state = optimizer.update(grads, opt_state)
         learning_params = optax.apply_updates(learning_params, updates)
 
-        # Update mutatable objects
-        learned_model.params, learned_traj.init_q = learning_params
-
         # Print data
         print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
+
+        # Update mutatable objects
+        learned_model.params, learned_traj.init_q = learning_params
 
         # Visualization / File updates
         if vis_update > 0 and epoch % vis_update == 0:
@@ -475,6 +477,6 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             if gui_vis is not None:
                 print("\t Visualizing...")
                 # TODO: Add visualization of results
-                breakpoint()
+                # breakpoint()
 
     ## END training loop
