@@ -7,6 +7,7 @@ Utilities for Mujoco XLA / JAX
 from functools import partial
 
 import jax
+import jax.numpy as jnp
 
 from mujoco import mjx
 import numpy as np
@@ -88,7 +89,9 @@ def contactids_from_collision_geoms(
     sensor_geoms: list[str],
     object_geoms: list[str],
 ) -> np.ndarray:
-    """Return list of contact ids that correspond with a sensor contacting an object"""
+    """Return mask (n_contactids) of contactids where:
+    (0 == no contact, -1 == to sensor, +1 == from sensor)
+    """
     sensor_geomids = [geomid_from_geom_name(base_model, name) for name in sensor_geoms]
     object_geomids = [geomid_from_geom_name(base_model, name) for name in object_geoms]
 
@@ -96,18 +99,16 @@ def contactids_from_collision_geoms(
     # pylint: disable=protected-access
     base_data = jit_forward(base_model, mjx.make_data(base_model))
 
-    return np.where(
-        np.logical_or(
-            np.logical_and(
-                np.isin(base_data._impl.contact.geom1, sensor_geomids),
-                np.isin(base_data._impl.contact.geom2, object_geomids),
-            ),
-            np.logical_and(
-                np.isin(base_data._impl.contact.geom1, object_geomids),
-                np.isin(base_data._impl.contact.geom2, sensor_geomids),
-            ),
-        ),
-    )[0]
+    from_mask = jnp.logical_and(
+        jnp.isin(base_data._impl.contact.geom1, jnp.array(object_geomids)),
+        jnp.isin(base_data._impl.contact.geom2, jnp.array(sensor_geomids)),
+    ).astype(float)
+    to_mask = jnp.logical_and(
+        jnp.isin(base_data._impl.contact.geom2, jnp.array(object_geomids)),
+        jnp.isin(base_data._impl.contact.geom1, jnp.array(sensor_geomids)),
+    ).astype(float)
+
+    return from_mask - to_mask
 
 
 ## Parameter Utilities
@@ -192,6 +193,7 @@ def diffsim_overwrite(
     return ret_list[1:]
 
 
+@jax.jit
 def data_unstack(data: mjx.Data) -> list[mjx.Data]:
     """Unstack a data object with a batch dimension into a list of mjx datas"""
     leaves, treedef = jax.tree.flatten(data)

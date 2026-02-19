@@ -45,7 +45,7 @@ def test_exploration():
     }
     contact_ids = mjx_util.contactids_from_collision_geoms(
         mjx_model, ["spherebot1-geom", "spherebot2-geom"], ["object-geom"]
-    )
+    )[0]
 
     jit_info = jax.jit(
         jax.vmap(exploration.expected_info, in_axes=(0, None, None, None, None, None))

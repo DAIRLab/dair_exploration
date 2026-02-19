@@ -7,8 +7,11 @@ The main contents of this file are as follows:
     * Class to hold and manage learnable parameters
 """
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
+import operator
 import time
+from typing import Optional
 
 import gin
 import jax
@@ -19,6 +22,7 @@ import numpy as np
 import optax
 
 from dair_exploration import file_util, mjx_util, data_util
+from dair_exploration.gui_util import MJXMeshcatVisualizer
 
 
 @gin.configurable
@@ -275,10 +279,25 @@ class LossStyle(Enum):
     VIMP = 1
 
 
+@gin.configurable
+@dataclass
+class LearningHyperparameters:
+    """Class to specify loss hyperparameters"""
+
+    # Loss Weights
+    phi_nominal: float = 0.002  # m, distance where p(contact_measured) drops below CI
+    phi_ci: float = 0.05  # Confidence Interval (0,1) for above
+    normal_var: float = (
+        0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
+    )
+
+
+@gin.configurable(allowlist=["hyperparams"])
 def loss_diffsim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
     active_model: mjx.Model,
+    hyperparams: LearningHyperparameters = LearningHyperparameters(),
 ) -> tuple[float, dict[str, jax.Array]]:
     """Diffsim loss function for training
 
@@ -295,8 +314,15 @@ def loss_diffsim(
     """
     # Write params to model and data objects
     model = LearnedModel.write_params_to_model(params[0], active_model)
-    init_data = mjx_util.write_qpos_to_data(model, mjx.make_data(model), params[1])
-    # TODO NOW: write spherebot initial position to init_data
+    init_poses = dict(
+        {
+            geom_name: measurements[geom_name]["position"][0, :]
+            for geom_name in measurements.keys()
+            if "position" in measurements[geom_name]
+        },
+        **(params[1]),
+    )
+    init_data = mjx_util.write_qpos_to_data(model, mjx.make_data(model), init_poses)
 
     # Run diffsim
     data_sim = mjx_util.diffsim(
@@ -312,20 +338,75 @@ def loss_diffsim(
         for geom_name in measurements.keys()
         if "contact_normal_W" in measurements[geom_name]
     }
+    # Mujoco wants us to use _impl
+    # pylint: disable=protected-access
     phis = {
-        geom_name: data_sim._impl.contact.dist[..., contact_ids]
-        for geom_name, contact_ids in contact_ids.items()
+        geom_name: jnp.sum(
+            data_sim._impl.contact.dist * jnp.abs(contact_id[jnp.newaxis, :]),
+            axis=-1,
+            keepdims=True,
+        )
+        for geom_name, contact_id in contact_ids.items()
     }
     normals = {
-        geom_name: data_sim._impl.contact.frame[..., contact_ids, 0, :]
-        for geom_name, contact_ids in contact_ids.items()
+        geom_name: jnp.mean(
+            jnp.sum(
+                contact_id[jnp.newaxis, :, jnp.newaxis]
+                * data_sim._impl.contact.frame[..., 0, :],
+                axis=-2,
+                keepdims=True,
+            ),
+            axis=-2,
+        )
+        for geom_name, contact_id in contact_ids.items()
     }
 
     # Compare outputs to measurements for loss
+    loss = {}
+    contact_bools = {
+        geom_name: jnp.round(
+            jnp.linalg.norm(
+                measurements[geom_name]["contact_normal_W"], axis=-1, keepdims=True
+            )
+        )
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
+    meas_normals = {
+        geom_name: measurements[geom_name]["contact_normal_W"]
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
 
-    breakpoint()
+    phi_alpha = (
+        np.log(np.reciprocal(hyperparams.phi_ci) - 1.0) / hyperparams.phi_nominal
+    )
 
-    return 0.0, {}
+    loss["normal"] = jax.tree.map(
+        lambda normal, meas_normal, contact_bool, normal_var=hyperparams.normal_var: 0.5
+        * contact_bool
+        * jnp.reciprocal(normal_var)
+        * (1.0 - jnp.sum(normal * meas_normal, axis=-1, keepdims=True)),
+        normals,
+        meas_normals,
+        contact_bools,
+    )
+
+    loss["contact_bool"] = jax.tree.map(
+        lambda phi, contact_bool, phi_alpha=phi_alpha: (contact_bool - 1.0)
+        * phi_alpha
+        * phi
+        - jax.nn.log_sigmoid(
+            -(phi_alpha * phi)
+        ),  # -logsigmoid(-x) == log(1+exp(x)), more numerically stable
+        phis,
+        contact_bools,
+    )
+
+    return (
+        jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
+        loss,
+    )
 
 
 # Lots of configuration (using gin) for training
@@ -336,6 +417,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     dataset: data_util.TrajectorySet,
     n_epochs: int,
     epoch_start: int = 0,
+    gui_vis: Optional[MJXMeshcatVisualizer] = None,
     loss_style: LossStyle = LossStyle.DIFFSIM,
     optimizer_cls: optax.GradientTransformation = optax.adam,
     vis_update: int = 0,
@@ -358,21 +440,21 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     assert loss_style == LossStyle.DIFFSIM
 
     # Configure loss, params, and optimizer
-    loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
+    # loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
+    # Diffsim needs forward-mode
+    # see https://github.com/google-deepmind/mujoco/issues/2259
+    loss_fn = jax.jit(jax.jacfwd(loss_diffsim, has_aux=True))
     learning_params = (learned_model.params, learned_traj.init_q)
     optimizer = optimizer_cls()
     opt_state = optimizer.init(learning_params)
 
     for epoch in range(epoch_start, epoch_start + n_epochs):
-        loss_diffsim(
-            learning_params, dataset.full_trajectory(), learned_model.active_model
-        )
-        breakpoint()
         start = time.time()
         # Compute Loss + Grad
-        (loss, _), grads = loss_fn(
+        grads, loss = loss_fn(
             learning_params, dataset.full_trajectory(), learned_model.active_model
         )
+        loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss))
 
         # Gradient Step
         updates, opt_state = optimizer.update(grads, opt_state)
@@ -381,13 +463,18 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         # Update mutatable objects
         learned_model.params, learned_traj.init_q = learning_params
 
+        # Print data
+        print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
+
         # Visualization / File updates
         if vis_update > 0 and epoch % vis_update == 0:
+            print("\t Writing to File...")
             # TODO: add GUI visualization update
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")
-
-        # Print data
-        print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss:6.4f})")
+            if gui_vis is not None:
+                print("\t Visualizing...")
+                # TODO: Add visualization of results
+                breakpoint()
 
     ## END training loop

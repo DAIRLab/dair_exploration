@@ -255,6 +255,7 @@ def main(
                 dataset,
                 n_epochs,
                 epochs,
+                gui_vis,
             )
             epochs = epochs + n_epochs
 
