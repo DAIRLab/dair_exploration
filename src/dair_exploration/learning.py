@@ -93,6 +93,8 @@ class LearnedModel:
         ), "Can't change parameter tree structure"
         self._params = value
 
+        # TODO: enforce positive cuboid size
+
         # Write params to spec
         for geom_name in self._params.keys():
             for param_name in self._params[geom_name].keys():
@@ -292,6 +294,7 @@ class LearningHyperparameters:
     normal_var: float = (
         0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
     )
+    w_pen: float = 0.0
 
 
 @gin.configurable(allowlist=["hyperparams"])
@@ -405,6 +408,17 @@ def loss_diffsim(
         contact_bools,
     )
 
+    # Add Penetration Loss
+    obj_contact_mask = mjx_util.contactids_from_geoms(model, params[1].keys())
+    loss["penetration"] = hyperparams.w_pen * jnp.sum(
+        jnp.maximum(
+            -data_sim._impl.contact.dist * obj_contact_mask[jnp.newaxis, :],
+            jnp.zeros_like(data_sim._impl.contact.dist),
+        ),
+        axis=-1,
+        keepdims=True,
+    )
+
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
         (loss, data_sim),
@@ -451,6 +465,10 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     opt_state = optimizer.init(learning_params)
 
     for epoch in range(epoch_start, epoch_start + n_epochs):
+        # test_loss = loss_diffsim(
+        #    learning_params, dataset.full_trajectory(), learned_model.base_model
+        # )
+        # breakpoint()
         start = time.time()
         # Compute Loss + Grad
         grads, (loss, data_sim) = loss_fn(
@@ -480,5 +498,6 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                     model=learned_model.active_model,
                     data_trajectory=mjx_util.data_unstack(data_sim),
                 )
+    return loss, data_sim
 
     ## END training loop

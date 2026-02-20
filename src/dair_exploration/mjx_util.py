@@ -84,6 +84,27 @@ def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
 # pylint: enable=missing-function-docstring
 
 
+def contactids_from_geoms(
+    base_model: mjx.Model,
+    object_geoms: list[str],
+) -> np.ndarray:
+    """Return mask (n_contactids) of contactids where:
+    (0 == no contact, 1 == contact)
+    """
+    object_geomids = [geomid_from_geom_name(base_model, name) for name in object_geoms]
+
+    # MJX requires access via _impl
+    # pylint: disable=protected-access
+    base_data = jit_forward(base_model, mjx.make_data(base_model))
+
+    mask = jnp.logical_or(
+        jnp.isin(base_data._impl.contact.geom1, jnp.array(object_geomids)),
+        jnp.isin(base_data._impl.contact.geom2, jnp.array(object_geomids)),
+    ).astype(float)
+
+    return mask
+
+
 def contactids_from_collision_geoms(
     base_model: mjx.Model,
     sensor_geoms: list[str],

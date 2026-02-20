@@ -249,7 +249,7 @@ def main(
                 print("Cancelling...")
                 continue
             print("Training...")
-            train_epochs(
+            last_loss, last_data = train_epochs(
                 learned_model,
                 learned_traj,
                 dataset,
