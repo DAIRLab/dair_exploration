@@ -77,7 +77,7 @@ class LearnedModel:
     def write_to_file(self, model_name: str = "out"):
         """Write current spec to file"""
         file_util.write_text(
-            self._active_spec.to_xml(), "learning", f"model_{model_name}.mjcf"
+            self._active_spec.to_xml(), "learning", f"model_{model_name}.xml"
         )
 
     @property

@@ -276,7 +276,7 @@ class TrifingerLCMService:
             )
 
             body_r_cw = body_r_bw * body_r_cb
-            fingertip_normal_w[body_name] = body_r_cw.apply(normal_c)
+            fingertip_normal_w[body_name] = body_r_cw.apply(np.copy(normal_c))
             # Zero out no contact normal
             finger_in_contact = np.array(
                 [

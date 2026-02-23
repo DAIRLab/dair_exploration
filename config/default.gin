@@ -15,7 +15,7 @@ fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
 default_dt = 0.03333333333333333 # 30 Hz
 traj_len_s = 1.0 # s, how long each trajectory is
 traj_len_dts = 31 # 30Hz + 1
-model_file = "default.mjcf"
+model_file = "default.xml"
 
 ## Main Config
 main.model_file = %model_file
