@@ -171,47 +171,44 @@ def jit_forward(model: mjx.Model, data: mjx.Data):
 
 
 ## Diff Sim
+@partial(jax.jit, static_argnames="stacked")
 def diffsim_overwrite(
     model: mjx.Model,
     init_data: mjx.Data,
     ctrl: jax.Array,
-    qpos_overwrite: dict[str, jax.Array],
-    qvel_overwrite: dict[str, jax.Array],
+    posvel_overwrite: dict[str, dict[str, jax.Array]],
+    stacked: bool = False,
 ) -> list[mjx.Data]:
     """Simulate from init_data
 
     Params:
         ctrl: (n_timesteps, n_ctrl)
-        qpos/qvel_overwrite: geom_name -> (n_timesteps, 3)
+        posvel_overwrite: geom_name ->
+            {"position": (n_timesteps, n_q), "velocity": (n_timesteps, n_v)}
 
     Returns:
         list of new data objects from simulation
     """
 
-    ret_list = [init_data]
+    def _sim_step(carry_data, in_x):
+        """Inner sim step"""
+        ctrl, posvel = in_x
+        new_qpos = carry_data.qpos
+        new_qvel = carry_data.qvel
+        for geom_name in posvel.keys():
+            qposidx = qposidx_from_geom_name(model, geom_name)
+            qvelidx = qvelidx_from_geom_name(model, geom_name)
+            new_qpos = new_qpos.at[qposidx].set(posvel[geom_name]["position"])
+            new_qvel = new_qvel.at[qvelidx].set(posvel[geom_name]["velocity"])
 
-    for timestep in range(ctrl.shape[0]):
-        old_data = ret_list[-1]
-        new_qpos = old_data.qpos
-        new_qvel = old_data.qvel
-        for geom_name in qpos_overwrite.keys():
-            qposadr = qposadr_from_geom_name(model, geom_name)
-            new_qpos = new_qpos.at[qposadr : qposadr + 3].set(
-                qpos_overwrite[geom_name][timestep]
-            )
-        for geom_name in qvel_overwrite.keys():
-            qveladr = qveladr_from_geom_name(model, geom_name)
-            new_qvel = new_qvel.at[qveladr : qveladr + 3].set(
-                qvel_overwrite[geom_name][timestep]
-            )
-        ret_list.append(
-            jit_step(
-                model,
-                old_data.replace(qpos=new_qpos, qvel=new_qvel, ctrl=ctrl[timestep]),
-            )
+        ret_data = jit_step(
+            model, carry_data.replace(ctrl=ctrl, qpos=new_qpos, qvel=new_qvel)
         )
+        return (ret_data, ret_data)
 
-    return ret_list[1:]
+    _, data_stacked = jax.lax.scan(_sim_step, init_data, (ctrl, posvel_overwrite))
+
+    return data_stacked if stacked else data_unstack(data_stacked)
 
 
 @jax.jit

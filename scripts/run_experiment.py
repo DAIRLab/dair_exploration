@@ -203,6 +203,7 @@ def main(
             dataset.add_trajectory(new_trajectory)
 
             # Visualize Complete Data
+            # TODO: DON'T update data (overwrites learned traj)
             gui_vis.update_visuals(
                 learned_model.active_model,
                 [
@@ -249,7 +250,7 @@ def main(
                 print("Cancelling...")
                 continue
             print("Training...")
-            last_loss, last_data = train_epochs(
+            last_loss, last_outputs, last_data = train_epochs(
                 learned_model,
                 learned_traj,
                 dataset,

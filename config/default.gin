@@ -35,6 +35,14 @@ optax.adam.learning_rate = 1e-3
 train_epochs.loss_style = %LossStyle.DIFFSIM
 train_epochs.vis_update = 1
 
+# Hyperparameters
+LearningHyperparameters.phi_nominal = 0.002  # m, distance where p(contact_measured) drops below CI
+LearningHyperparameters.phi_ci = 0.05  # Confidence Interval (0,1) for above
+LearningHyperparameters.normal_var = 0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
+LearningHyperparameters.w_pen = 1e0
+LearningHyperparameters.reg_grounded = 1e2
+LearningHyperparameters.ground_geom = "ground-geom"
+
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names
 TrifingerLCMService.object_geom_name = %true_geom_name
@@ -57,7 +65,7 @@ finger_0_vec/np.array.object = [-1., 0., 0.] #[-0.8660254, 0.5, 0.] #
 ActionWorkspaceParams.finger_0_vec = @finger_0_vec/np.array()
 finger_120_vec/np.array.object = [1., 0., 0.] #[0.8660254, -0.5, 0.] #
 ActionWorkspaceParams.finger_120_vec = @finger_120_vec/np.array()
-ActionWorkspaceParams.ra_range = (-1.256637061, 1.256637061) # [-2pi/5, 2pi/5]
-ActionWorkspaceParams.dec_range = (0., 1.256637061) # [0., 2pi/5]
+ActionWorkspaceParams.ra_range = (0., 0.)#(-1.256637061, 1.256637061) # [-2pi/5, 2pi/5]
+ActionWorkspaceParams.dec_range = (0., 0.)#(0., 1.256637061) # [0., 2pi/5]
 ActionWorkspaceParams.ground_buffer = True
 ActionWorkspaceParams.robot_buffer = True

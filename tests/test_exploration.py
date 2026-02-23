@@ -3,6 +3,7 @@
 """
 Test EIG calculation
 """
+
 import time
 
 import jax

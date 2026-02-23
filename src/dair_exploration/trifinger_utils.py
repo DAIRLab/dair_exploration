@@ -6,6 +6,7 @@ The main contents of this file are as follows:
 
         * Class to handle LCM communication with the robot
 """
+
 import time
 from typing import Any, Optional, Union
 

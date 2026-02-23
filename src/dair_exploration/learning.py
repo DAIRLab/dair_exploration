@@ -6,6 +6,7 @@ The main contents of this file are as follows:
 
     * Class to hold and manage learnable parameters
 """
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -35,8 +36,12 @@ class LearnedModel:
     r"""Mujoco spec corresponding to current model parameters"""
     _base_model: mjx.Model = None
     r"""Cache of the initial model"""
+    _min_size: float = 1e-3
+    r"""Minimum size for cuboid"""
 
-    def __init__(self, model_file: str, param_spec: dict[str, list[str]]):
+    def __init__(
+        self, model_file: str, param_spec: dict[str, list[str]], min_size: float = 1e-3
+    ):
         spec = mujoco.MjSpec.from_file(file_util.get_config(model_file).as_posix())
         # Populate params dict
         # TODO: add mass, CoM, inertia
@@ -52,8 +57,10 @@ class LearnedModel:
                         )
                     elif spec.geom(geom_name).type == mujoco.mjtGeom.mjGEOM_BOX:
                         # Cuboid
-                        self._params[geom_name][param] = jnp.asarray(
-                            spec.geom(geom_name).size
+                        self._params[geom_name][param] = jnp.maximum(
+                            jnp.asarray(spec.geom(geom_name).size),
+                            min_size
+                            * jnp.ones_like(jnp.asarray(spec.geom(geom_name).size)),
                         )
                     else:
                         raise NotImplementedError(
@@ -93,8 +100,6 @@ class LearnedModel:
         ), "Can't change parameter tree structure"
         self._params = value
 
-        # TODO: enforce positive cuboid size
-
         # Write params to spec
         for geom_name in self._params.keys():
             for param_name in self._params[geom_name].keys():
@@ -112,7 +117,12 @@ class LearnedModel:
                         self._active_spec.geom(geom_name).type
                         == mujoco.mjtGeom.mjGEOM_BOX
                     ):
-                        # Cuboid
+                        # Cuboid, clamp to min_size
+                        self._params[geom_name][param_name] = jnp.maximum(
+                            self._params[geom_name][param_name],
+                            self._min_size
+                            * jnp.ones_like(self._params[geom_name][param_name]),
+                        )
                         self._active_spec.geom(geom_name).size = np.array(
                             self._params[geom_name][param_name]
                         )
@@ -284,7 +294,7 @@ class LossStyle(Enum):
 
 
 @gin.configurable
-@dataclass
+@dataclass(frozen=True)
 class LearningHyperparameters:
     """Class to specify loss hyperparameters"""
 
@@ -294,7 +304,34 @@ class LearningHyperparameters:
     normal_var: float = (
         0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
     )
-    w_pen: float = 0.0
+    w_pen: float = 0.0  # multiplier on penetration in m
+
+    # Regularizers
+    reg_grounded: float = 1e1  # multiplier on distance from ground a T=0
+    ground_geom: str = "ground-geom"
+
+
+@gin.configurable(allowlist=["hyperparams"])
+def loss_vimp(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    base_model: mjx.Model,
+    hyperparams: LearningHyperparameters,
+) -> tuple[float, dict[str, jax.Array]]:
+    """Violation-Implicit Loss for Training
+
+    Parameters:
+        * params: tuple of (model_params, traj_param)
+        * * where traj_param is specifically q0 for each learnable geometry
+        * measurements: contact and robot proprioception and control data,
+        * * as a full trajectory (not a list of trajectories)
+        * base_model: the mjx model in which to create data and write params
+
+    Returns:
+        * Loss (scalar)
+        * Auxiliary data (e.g. individual loss / regularization terms)
+    """
+    return 0.0, {"loss": 0.0}
 
 
 @gin.configurable(allowlist=["hyperparams"])
@@ -302,7 +339,7 @@ def loss_diffsim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
-    hyperparams: LearningHyperparameters = LearningHyperparameters(),
+    hyperparams: LearningHyperparameters,
 ) -> tuple[float, dict[str, jax.Array]]:
     """Diffsim loss function for training
 
@@ -319,24 +356,35 @@ def loss_diffsim(
     """
     # Write params to model and data objects
     model = LearnedModel.write_params_to_model(params[0], base_model)
-    init_poses = dict(
+    init_data = mjx_util.write_qpos_to_data(
+        model,
+        mjx.make_data(model),
+        dict(
+            {
+                geom_name: measurements[geom_name]["position"][0, :]
+                for geom_name in measurements.keys()
+                if "position" in measurements[geom_name]
+            },
+            **(params[1]),
+        ),
+    )
+
+    # Run diffsim
+    data_sim = mjx_util.diffsim_overwrite(
+        model,
+        init_data,
+        measurements["ctrl"],
         {
-            geom_name: measurements[geom_name]["position"][0, :]
+            geom_name: measurements[geom_name]
             for geom_name in measurements.keys()
             if "position" in measurements[geom_name]
         },
-        **(params[1]),
-    )
-    init_data = mjx_util.write_qpos_to_data(model, mjx.make_data(model), init_poses)
-
-    # Run diffsim
-    data_sim = mjx_util.diffsim(
-        model, init_data, measurements["ctrl"], stacked=True
+        stacked=True,
     )  # mjx.Data w/ leading T dimension
 
     # Compute outputs (phi, normal)
     assert len(params[1].keys()) == 1  # Only 1 object supported
-    contact_ids = {
+    contact_masks = {
         geom_name: mjx_util.contactids_from_collision_geoms(
             model, [geom_name], params[1].keys()
         )
@@ -347,23 +395,23 @@ def loss_diffsim(
     # pylint: disable=protected-access
     phis = {
         geom_name: jnp.sum(
-            data_sim._impl.contact.dist * jnp.abs(contact_id[jnp.newaxis, :]),
+            data_sim._impl.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
             axis=-1,
             keepdims=True,
         )
-        for geom_name, contact_id in contact_ids.items()
+        for geom_name, contact_mask in contact_masks.items()
     }
     normals = {
         geom_name: jnp.mean(
             jnp.sum(
-                contact_id[jnp.newaxis, :, jnp.newaxis]
+                contact_mask[jnp.newaxis, :, jnp.newaxis]
                 * data_sim._impl.contact.frame[..., 0, :],
                 axis=-2,
                 keepdims=True,
             ),
             axis=-2,
         )
-        for geom_name, contact_id in contact_ids.items()
+        for geom_name, contact_mask in contact_masks.items()
     }
 
     # Compare outputs to measurements for loss
@@ -408,20 +456,34 @@ def loss_diffsim(
         contact_bools,
     )
 
-    # Add Penetration Loss
-    obj_contact_mask = mjx_util.contactids_from_geoms(model, params[1].keys())
+    # Add Penetration Loss, any contact_id for the learned object
+    dist_pen = jnp.maximum(
+        -data_sim._impl.contact.dist
+        * mjx_util.contactids_from_geoms(model, params[1].keys())[jnp.newaxis, :],
+        jnp.zeros_like(data_sim._impl.contact.dist),
+    )
     loss["penetration"] = hyperparams.w_pen * jnp.sum(
-        jnp.maximum(
-            -data_sim._impl.contact.dist * obj_contact_mask[jnp.newaxis, :],
-            jnp.zeros_like(data_sim._impl.contact.dist),
-        ),
+        dist_pen,
         axis=-1,
         keepdims=True,
     )
 
+    # Add ground regularizer
+    # TODO: ignore those equal to 1 (not fatal, but makes loss look high)
+    loss["reg_grounded"] = hyperparams.reg_grounded * jnp.sum(
+        jnp.abs(
+            (
+                data_sim._impl.contact.dist
+                * mjx_util.contactids_from_collision_geoms(
+                    model, [hyperparams.ground_geom], params[1].keys()
+                )
+            )[0, ...]
+        )
+    )
+
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
-        (loss, data_sim),
+        (loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}, data_sim),
     )
 
 
@@ -459,37 +521,47 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     # loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
     # Diffsim needs forward-mode (and it is faster with long graphs)
     # see https://github.com/google-deepmind/mujoco/issues/2259
-    loss_fn = jax.jit(jax.jacfwd(loss_diffsim, has_aux=True))
-    learning_params = (learned_model.params, learned_traj.init_q)
+    loss_fn = jax.jit(
+        jax.jacfwd(loss_diffsim, has_aux=True), static_argnames=["hyperparams"]
+    )
+
+    def get_learning_params():
+        return (learned_model.params, learned_traj.init_q)
+
+    def set_learning_params(params):
+        learned_model.params, learned_traj.init_q = params
+
     optimizer = optimizer_cls()
-    opt_state = optimizer.init(learning_params)
+    opt_state = optimizer.init(get_learning_params())
 
     for epoch in range(epoch_start, epoch_start + n_epochs):
         # test_loss = loss_diffsim(
-        #    learning_params, dataset.full_trajectory(), learned_model.base_model
+        #     get_learning_params(),
+        #     dataset.full_trajectory(),
+        #     learned_model.base_model,
+        #     LearningHyperparameters(),
         # )
         # breakpoint()
         start = time.time()
         # Compute Loss + Grad
-        grads, (loss, data_sim) = loss_fn(
-            learning_params, dataset.full_trajectory(), learned_model.base_model
+        grads, (loss, outputs, data_sim) = loss_fn(
+            get_learning_params(),
+            dataset.full_trajectory(),
+            learned_model.base_model,
+            LearningHyperparameters(),
         )
         loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss))
 
         # Gradient Step
         updates, opt_state = optimizer.update(grads, opt_state)
-        learning_params = optax.apply_updates(learning_params, updates)
+        set_learning_params(optax.apply_updates(get_learning_params(), updates))
 
         # Print data
         print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
 
-        # Update mutatable objects
-        learned_model.params, learned_traj.init_q = learning_params
-
         # Visualization / File updates
         if vis_update > 0 and epoch % vis_update == 0:
             print("\t Writing to File...")
-            # TODO: add GUI visualization update
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")
             if gui_vis is not None:
@@ -498,6 +570,6 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                     model=learned_model.active_model,
                     data_trajectory=mjx_util.data_unstack(data_sim),
                 )
-    return loss, data_sim
+    return loss, outputs, data_sim
 
     ## END training loop

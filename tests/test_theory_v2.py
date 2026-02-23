@@ -365,10 +365,8 @@ def test_theory():
     avg_gradv2_mcmc_mcmc = jnp.sum(gradsv2_mcmc_mcmc, axis=0) / mt_mcmc_xt_mcmc.shape[0]
     print(f"Average analytic grad: {avg_gradv2}")
     print(f"Average analytic grad w/ xt MCMC AND CORRECTION: {avg_gradv2_mcmc}")
-    print(
-        f"Average analytic grad w/ xt MCMC, \
-        correction, and mt MCMC w/ xt MCMC: {avg_gradv2_mcmc_mcmc}"
-    )
+    print(f"Average analytic grad w/ xt MCMC, \
+        correction, and mt MCMC w/ xt MCMC: {avg_gradv2_mcmc_mcmc}")
     avg_gradv2_outer = (
         jnp.sum(jax.vmap(jnp.outer)(gradsv2, gradsv2), axis=0) / mt_mcmc.shape[0]
     )
@@ -384,10 +382,8 @@ def test_theory():
     print(
         f"Average analytic grad outer product w/ xt MCMC AND CORRECTION: {avg_gradv2_outer_mcmc}"
     )
-    print(
-        f"Average analytic grad outer product w/ xt MCMC, \
-        correction, and mt MCMC w/ xt MCMC: {avg_gradv2_outer_mcmc_mcmc}"
-    )
+    print(f"Average analytic grad outer product w/ xt MCMC, \
+        correction, and mt MCMC w/ xt MCMC: {avg_gradv2_outer_mcmc_mcmc}")
 
     print("Computing Hessians...")
     hess_arr = []

@@ -3,6 +3,7 @@
 """
 Test basic GUI visualization tools
 """
+
 import time
 
 import jax
