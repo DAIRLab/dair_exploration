@@ -298,6 +298,9 @@ class LossStyle(Enum):
 class LearningHyperparameters:
     """Class to specify loss hyperparameters"""
 
+    # Switches
+    sim_overwrite: bool = True  # Whether to overwrite sim or just do open-loop control
+
     # Loss Weights
     phi_nominal: float = 0.002  # m, distance where p(contact_measured) drops below CI
     phi_ci: float = 0.05  # Confidence Interval (0,1) for above
@@ -370,17 +373,27 @@ def loss_diffsim(
     )
 
     # Run diffsim
-    data_sim = mjx_util.diffsim_overwrite(
-        model,
-        init_data,
-        measurements["ctrl"],
-        {
-            geom_name: measurements[geom_name]
-            for geom_name in measurements.keys()
-            if "position" in measurements[geom_name]
-        },
-        stacked=True,
-    )  # mjx.Data w/ leading T dimension
+    data_sim = (
+        mjx_util.diffsim_overwrite(
+            model,
+            init_data,
+            measurements["ctrl"],
+            {
+                geom_name: measurements[geom_name]
+                for geom_name in measurements.keys()
+                if "position" in measurements[geom_name]
+            },
+            stacked=True,
+        )
+        if hyperparams.sim_overwrite
+        else mjx_util.diffsim(
+            model,
+            init_data,
+            measurements["ctrl"],
+            stacked=True,
+        )
+    )
+    # mjx.Data w/ leading T dimension
 
     # Compute outputs (phi, normal)
     assert len(params[1].keys()) == 1  # Only 1 object supported
