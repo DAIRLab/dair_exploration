@@ -21,7 +21,7 @@ def test_exploration():
     # Tests can be arbitrarily long
     # pylint: disable=too-many-locals
     enable_jax_cache()
-    learned_model = LearnedModel("default.mjcf", {"object-geom": ["size"]})
+    learned_model = LearnedModel("default.xml", {"object-geom": ["size"]})
     mjx_model = learned_model.active_model
     dt = float(mjx_model.opt.timestep)
     nstep = int(2.0 / dt)

@@ -63,7 +63,7 @@ def main(
     run_dir = results_dir()
     # Save config files to run dir
     copy_run_config(get_config(config_file), "config.gin")
-    copy_run_config(get_config(model_file), "model.mjcf")
+    copy_run_config(get_config(model_file), "model.xml")
     print(f"Storing data and results at {run_dir}")
 
     # Initialize LCM
@@ -203,16 +203,14 @@ def main(
             dataset.add_trajectory(new_trajectory)
 
             # Visualize Complete Data
-            # TODO: DON'T update data (overwrites learned traj)
             gui_vis.update_visuals(
                 learned_model.active_model,
-                [
-                    mjx_util.jit_forward(
-                        learned_model.active_model,
-                        mjx.make_data(learned_model.active_model),
-                    )
-                ]
-                * len(dataset.full_trajectory()["time"]),
+                gui_vis.data_trajectory
+                + [gui_vis.data_trajectory[-1]]
+                * (
+                    len(dataset.full_trajectory()["time"])
+                    - len(gui_vis.data_trajectory)
+                ),
                 {
                     trifinger_lcm.object_geom_name: [
                         (
@@ -250,7 +248,7 @@ def main(
                 print("Cancelling...")
                 continue
             print("Training...")
-            last_loss, last_outputs, last_data = train_epochs(
+            train_epochs(
                 learned_model,
                 learned_traj,
                 dataset,

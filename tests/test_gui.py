@@ -23,7 +23,7 @@ def test_gui():
     # Tests can be arbitrarily long
     # pylint: disable=too-many-locals
     enable_jax_cache()
-    mj_model = mujoco.MjModel.from_xml_path(get_config("default.mjcf").as_posix())
+    mj_model = mujoco.MjModel.from_xml_path(get_config("default.xml").as_posix())
     mjx_model = mjx.put_model(mj_model)
     dt = float(mj_model.opt.timestep)
     nstep = int(2.0 / dt)

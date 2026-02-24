@@ -43,6 +43,11 @@ class MJXMeshcatVisualizer:
             model, [mjx.make_data(model)] if init_data is None else [init_data], None
         )
 
+    @property
+    def data_trajectory(self):
+        """Get current mjx data trajectory"""
+        return self._data
+
     def update_visuals(
         self,
         model: Optional[mjx.Model] = None,

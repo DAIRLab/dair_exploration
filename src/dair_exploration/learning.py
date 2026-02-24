@@ -483,7 +483,11 @@ def loss_diffsim(
 
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
-        (loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}, data_sim),
+        {
+            "loss": loss,
+            "outputs": {"phis": phis, "normals": normals, "dist_pen": dist_pen},
+            "data_sim": data_sim,
+        },
     )
 
 
@@ -543,20 +547,20 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         # )
         # breakpoint()
         start = time.time()
-        # Compute Loss + Grad
-        grads, (loss, outputs, data_sim) = loss_fn(
+        # Compute Grad + auxiliary data
+        grads, aux = loss_fn(
             get_learning_params(),
             dataset.full_trajectory(),
             learned_model.base_model,
             LearningHyperparameters(),
         )
-        loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss))
 
         # Gradient Step
         updates, opt_state = optimizer.update(grads, opt_state)
         set_learning_params(optax.apply_updates(get_learning_params(), updates))
 
         # Print data
+        loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, aux["loss"]))
         print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
 
         # Visualization / File updates
@@ -564,12 +568,11 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             print("\t Writing to File...")
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")
+            file_util.write_object(aux, "learning", f"aux_{epoch:04d}.pkl")
             if gui_vis is not None:
                 print("\t Visualizing...")
                 gui_vis.update_visuals(
                     model=learned_model.active_model,
-                    data_trajectory=mjx_util.data_unstack(data_sim),
+                    data_trajectory=mjx_util.data_unstack(aux["data_sim"]),
                 )
-    return loss, outputs, data_sim
-
     ## END training loop
