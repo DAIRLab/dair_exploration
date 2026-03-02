@@ -202,6 +202,9 @@ def main(
             # Write data to TrajectorySet
             dataset.add_trajectory(new_trajectory)
 
+            # Expand LearnedTrajectory
+            learned_traj.extend_traj(len(new_trajectory["time"]))
+
             # Visualize Complete Data
             gui_vis.update_visuals(
                 learned_model.active_model,

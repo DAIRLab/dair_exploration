@@ -225,6 +225,29 @@ class LearnedTrajectory(Sequence):
                 jnp.expand_dims(base_model.qpos0[qposids], axis=0)
             ]
 
+    def extend_traj(self, n_timesteps: int):
+        """Extend the learned trajectory by a known number of timesteps."""
+        for geom_name, geom_traj in self._params.items():
+            last_pose = geom_traj[TrajParamKey.Q0][-1]
+            geom_traj[TrajParamKey.Q0].append(last_pose)
+            geom_traj[TrajParamKey.TRAJQ].append(
+                jnp.repeat(
+                    last_pose,
+                    n_timesteps - 2,
+                    axis=0,
+                )
+            )
+            zero_velocity = jnp.zeros(
+                (1, len(mjx_util.qvelidx_from_geom_name(self._base_model, geom_name)))
+            )
+            geom_traj[TrajParamKey.TRAJV].append(
+                jnp.repeat(
+                    zero_velocity,
+                    n_timesteps - 2,
+                    axis=0,
+                )
+            )
+
     @property
     def init_q(self) -> dict[str, jax.Array]:
         """Initial position"""
@@ -266,7 +289,7 @@ class LearnedTrajectory(Sequence):
                         1 + pad_len,
                         axis=0,
                     ),
-                    geom_traj[TrajParamKey.TRAJQ],
+                    geom_traj[TrajParamKey.TRAJQ][idx],
                     geom_traj[TrajParamKey.Q0][idx + 1],
                 ]
             )
@@ -274,11 +297,37 @@ class LearnedTrajectory(Sequence):
             ret[geom_name]["velocity"] = jnp.concatenate(
                 [
                     jnp.repeat(jnp.zeros((1, len(n_v))), 1 + pad_len, axis=0),
-                    geom_traj[TrajParamKey.TRAJV],
+                    geom_traj[TrajParamKey.TRAJV][idx],
                     jnp.zeros((1, len(n_v))),
                 ]
             )
         return ret
+
+    def __setitem__(self, idx: int, new_traj: dict[str, dict[str, jax.Array]]):
+        """Write parameter array from (padded) input to corresponding trajectory"""
+        for geom_name, geom_traj in self._params.items():
+            pad_len = (
+                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ]) + 2)
+                if self._fixed_len > 0
+                else 0
+            )
+            assert (
+                len(new_traj[geom_name]["position"])
+                == len(new_traj[geom_name]["velocity"])
+                == len(geom_traj[TrajParamKey.TRAJQ][idx]) + 2 + pad_len
+            )
+            geom_traj[TrajParamKey.Q0][idx] = jnp.mean(
+                new_traj[geom_name]["position"][: (pad_len + 1), ...],
+                axis=0,
+                keepdims=True,
+            )
+            geom_traj[TrajParamKey.TRAJQ][idx] = new_traj[geom_name]["position"][
+                (pad_len + 1) : -1
+            ]
+            geom_traj[TrajParamKey.TRAJV][idx] = new_traj[geom_name]["velocity"][
+                (pad_len + 1) : -1
+            ]
+            geom_traj[TrajParamKey.Q0][idx + 1] = new_traj[geom_name]["position"][-1:]
 
     def write_to_file(self, traj_name: str = "out"):
         """Write current spec to file"""
