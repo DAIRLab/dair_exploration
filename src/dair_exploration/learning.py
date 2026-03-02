@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 import operator
 import time
-from typing import Optional
+from typing import Optional, Any
 
 import gin
 import jax
@@ -277,7 +277,7 @@ class LearnedTrajectory(Sequence):
         ret = {}
         for geom_name, geom_traj in self._params.items():
             pad_len = (
-                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ]) + 2)
+                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ][idx]) + 2)
                 if self._fixed_len > 0
                 else 0
             )
@@ -296,9 +296,9 @@ class LearnedTrajectory(Sequence):
             n_v = geom_traj[TrajParamKey.TRAJV][0].shape[-1]
             ret[geom_name]["velocity"] = jnp.concatenate(
                 [
-                    jnp.repeat(jnp.zeros((1, len(n_v))), 1 + pad_len, axis=0),
+                    jnp.repeat(jnp.zeros((1, n_v)), 1 + pad_len, axis=0),
                     geom_traj[TrajParamKey.TRAJV][idx],
-                    jnp.zeros((1, len(n_v))),
+                    jnp.zeros((1, n_v)),
                 ]
             )
         return ret
@@ -369,7 +369,7 @@ def loss_vimp(
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
     hyperparams: LearningHyperparameters,
-) -> tuple[float, dict[str, jax.Array]]:
+) -> tuple[float, Any]:
     """Violation-Implicit Loss for Training
 
     Parameters:
@@ -383,6 +383,62 @@ def loss_vimp(
         * Loss (scalar)
         * Auxiliary data (e.g. individual loss / regularization terms)
     """
+    # Write params to model and data objects
+    model = LearnedModel.write_params_to_model(params[0], base_model)
+    pose_traj = {
+        geom_name: measurements[geom_name]["position"]
+        for geom_name in measurements.keys()
+        if "position" in measurements[geom_name]
+    } | {geom_name: params[1][geom_name]["position"] for geom_name in params[1].keys()}
+    vel_traj = {
+        geom_name: measurements[geom_name]["velocity"]
+        for geom_name in measurements.keys()
+        if "velocity" in measurements[geom_name]
+    } | {geom_name: params[1][geom_name]["velocity"] for geom_name in params[1].keys()}
+    # Forward will compute all physical parameters and distances
+    mjx_data = jax.vmap(mjx.forward, in_axes=(None, 0))(
+        model,
+        jax.vmap(
+            mjx_util.write_qvel_to_data,
+            in_axes=(None, 0, {geom_name: 0 for geom_name in pose_traj.keys()}),
+        )(
+            model,
+            jax.vmap(
+                mjx_util.write_qpos_to_data,
+                in_axes=(None, None, {geom_name: 0 for geom_name in pose_traj.keys()}),
+            )(model, mjx.make_data(model), pose_traj),
+            vel_traj,
+        ),
+    )
+
+    # Get multibody physics parameters
+    obj_qvel_idx = mjx_util.qvelidx_from_geom_names(model, list(params[1].keys()))
+    delassus_objonly = (
+        mjx_data.efc_J[..., obj_qvel_idx]
+        @ jnp.linalg.inv(mjx_data.qM[..., obj_qvel_idx, :][..., obj_qvel_idx])
+        @ jnp.moveaxis(mjx_data.efc_J[..., obj_qvel_idx], -1, -2)
+    )  # (n_t, n_l, n_l)
+    non_contact_acceleration = (
+        jnp.linalg.inv(mjx_data.qM)
+        @ jnp.expand_dims(
+            mjx_data.qfrc_passive
+            + mjx_data.qfrc_actuator
+            + mjx_data.qfrc_applied
+            - mjx_data.qfrc_bias,
+            axis=-1,
+        )
+    ).squeeze()  # (n_t, n_v)
+    ### Prediction: Velocity Term
+    # Exclude robot predictions
+    # velocity_mask: 1 for learnable velocities, 0 for robot velocities.
+    breakpoint()
+
+    # Run QP optimization
+
+    # Record contactnets loss terms
+
+    # Record measurement loss terms
+
     return 0.0, {"loss": 0.0}
 
 
@@ -392,7 +448,7 @@ def loss_diffsim(
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
     hyperparams: LearningHyperparameters,
-) -> tuple[float, dict[str, jax.Array]]:
+) -> tuple[float, Any]:
     """Diffsim loss function for training
 
     Parameters:
@@ -580,46 +636,76 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     Return (TODO) loss statistics; Learned Model/Trajectory are mutated.
     """
-    # TODO: switch based on lossstyle
-    assert loss_style == LossStyle.DIFFSIM
 
     # Configure loss, params, and optimizer
     # loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
     # Diffsim needs forward-mode (and it is faster with long graphs)
     # see https://github.com/google-deepmind/mujoco/issues/2259
-    loss_fn = jax.jit(
-        jax.jacfwd(loss_diffsim, has_aux=True), static_argnames=["hyperparams"]
-    )
+    if loss_style == LossStyle.DIFFSIM:
+        n_batch = 1
+        loss_fn = jax.jit(
+            jax.jacfwd(loss_diffsim, has_aux=True), static_argnames=["hyperparams"]
+        )
+    elif loss_style == LossStyle.VIMP:
+        n_batch = len(dataset)
+        loss_fn = jax.jit(
+            jax.grad(loss_vimp, has_aux=True), static_argnames=["hyperparams"]
+        )
+    else:
+        raise NotImplementedError(f"Loss Style {loss_style} not supported.")
 
-    def get_learning_params():
-        return (learned_model.params, learned_traj.init_q)
-
-    def set_learning_params(params):
-        learned_model.params, learned_traj.init_q = params
-
-    optimizer = optimizer_cls()
-    opt_state = optimizer.init(get_learning_params())
-
-    for epoch in range(epoch_start, epoch_start + n_epochs):
-        # test_loss = loss_diffsim(
-        #     get_learning_params(),
-        #     dataset.full_trajectory(),
-        #     learned_model.base_model,
-        #     LearningHyperparameters(),
-        # )
-        # breakpoint()
-        start = time.time()
-        # Compute Grad + auxiliary data
-        grads, aux = loss_fn(
-            get_learning_params(),
-            dataset.full_trajectory(),
-            learned_model.base_model,
-            LearningHyperparameters(),
+    def get_learning_params(batch_idx):
+        return (
+            learned_model.params,
+            (
+                learned_traj.init_q
+                if loss_style == LossStyle.DIFFSIM
+                else learned_traj[batch_idx]
+            ),
         )
 
-        # Gradient Step
-        updates, opt_state = optimizer.update(grads, opt_state)
-        set_learning_params(optax.apply_updates(get_learning_params(), updates))
+    def get_data(batch_idx):
+        return (
+            dataset.full_trajectory()
+            if loss_style == LossStyle.DIFFSIM
+            else dataset[batch_idx]
+        )
+
+    def set_learning_params(params, batch_idx):
+        if loss_style == LossStyle.DIFFSIM:
+            learned_model.params, learned_traj.init_q = params
+        else:
+            learned_model.params, learned_traj[batch_idx] = params
+
+    optimizer = optimizer_cls()
+    opt_state = optimizer.init(get_learning_params(0))
+
+    hyperparams = LearningHyperparameters()
+
+    for epoch in range(epoch_start, epoch_start + n_epochs):
+        start = time.time()
+
+        for batch_idx in range(n_batch):
+            test_loss = loss_vimp(
+                get_learning_params(batch_idx),
+                get_data(batch_idx),
+                learned_model.base_model,
+                hyperparams,
+            )
+            breakpoint()
+            # Compute Grad + auxiliary data
+            grads, aux = loss_fn(
+                get_learning_params(batch_idx),
+                get_data(batch_idx),
+                learned_model.base_model,
+                hyperparams,
+            )
+
+            # Gradient Step
+            updates, opt_state = optimizer.update(grads, opt_state)
+            set_learning_params(
+                optax.apply_updates(get_learning_params(batch_idx), updates), batch_idx
+            )
 
         # Print data
         loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, aux["loss"]))

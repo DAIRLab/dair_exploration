@@ -47,7 +47,7 @@ def qveladr_from_geom_name(model: mjx.Model, name: str) -> int:
     )
 
 
-def qposidx_from_geom_name(model: mjx.Model, name: str) -> int:
+def qposidx_from_geom_name(model: mjx.Model, name: str) -> np.ndarray:
     bodyid = bodyid_from_geomid(model, geomid_from_geom_name(model, name))
     qposids = []
     # Loop through all joints in body
@@ -64,7 +64,7 @@ def qposidx_from_geom_name(model: mjx.Model, name: str) -> int:
     return np.array(qposids)
 
 
-def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
+def qvelidx_from_geom_name(model: mjx.Model, name: str) -> np.ndarray:
     bodyid = bodyid_from_geomid(model, geomid_from_geom_name(model, name))
     qvelids = []
     # Loop through all joints in body
@@ -79,6 +79,10 @@ def qvelidx_from_geom_name(model: mjx.Model, name: str) -> int:
         )
 
     return np.array(qvelids)
+
+
+def qvelidx_from_geom_names(model: mjx.Model, names: list[str]) -> np.ndarray:
+    return np.concatenate([qvelidx_from_geom_name(model, name) for name in names])
 
 
 # pylint: enable=missing-function-docstring
