@@ -123,9 +123,7 @@ class MJXMeshcatVisualizer:
                 trimesh_mesh = trimesh.Trimesh(
                     vertices=np.asarray(
                         Rotation.from_quat(jnp.roll(self._model.mesh_quat, -1)).apply(
-                            # Mujoco wants us to use _impl
-                            # pylint: disable-next=protected-access
-                            self._model._impl.mesh_convex[0].vert
+                            self._model.mesh_convex[0].vert
                         )
                         + self._model.mesh_pos
                     )

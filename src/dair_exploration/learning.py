@@ -362,6 +362,9 @@ class LearningHyperparameters:
     reg_grounded: float = 1e1  # multiplier on distance from ground a T=0
     ground_geom: str = "ground-geom"
 
+    # Computation Parameters
+    epsilon: float = 1e-8
+
 
 @gin.configurable(allowlist=["hyperparams"])
 def loss_vimp(
@@ -410,14 +413,14 @@ def loss_vimp(
             vel_traj,
         ),
     )
-
-    # Get multibody physics parameters
+    ### Prediction: Velocity Term
+    # Exclude robot predictions
     obj_qvel_idx = mjx_util.qvelidx_from_geom_names(model, list(params[1].keys()))
     delassus_objonly = (
-        mjx_data.efc_J[..., obj_qvel_idx]
-        @ jnp.linalg.inv(mjx_data.qM[..., obj_qvel_idx, :][..., obj_qvel_idx])
-        @ jnp.moveaxis(mjx_data.efc_J[..., obj_qvel_idx], -1, -2)
-    )  # (n_t, n_l, n_l)
+        mjx_data.efc_J[1:, :, obj_qvel_idx]
+        @ jnp.linalg.inv(mjx_data.qM[1:, obj_qvel_idx, :][..., obj_qvel_idx])
+        @ jnp.moveaxis(mjx_data.efc_J[1:, :, obj_qvel_idx], -1, -2)
+    )  # (n_t-1, n_l, n_l)
     non_contact_acceleration = (
         jnp.linalg.inv(mjx_data.qM)
         @ jnp.expand_dims(
@@ -427,10 +430,42 @@ def loss_vimp(
             - mjx_data.qfrc_bias,
             axis=-1,
         )
-    ).squeeze()  # (n_t, n_v)
-    ### Prediction: Velocity Term
-    # Exclude robot predictions
-    # velocity_mask: 1 for learnable velocities, 0 for robot velocities.
+    ).squeeze()[
+        1:, :
+    ]  # (n_t-1, n_v)
+    delta_t = jnp.expand_dims(
+        measurements["time"][1:] - measurements["time"][:-1], axis=-1
+    )  # (n_t-1, 1)
+    obj_delta_v = mjx_data.qvel[1:, obj_qvel_idx] - (
+        mjx_data.qvel[:-1, obj_qvel_idx]
+        + non_contact_acceleration[..., obj_qvel_idx] * delta_t
+    )  # (n_t-1, n_v)
+
+    qp_v_pred = delassus_objonly + hyperparams.epsilon * jnp.eye(
+        delassus_objonly.shape[-1]
+    )  # (n_t-1, n_l, n_l)
+    q_v_pred = -mjx_data.efc_J[1:, :, obj_qvel_idx] @ jnp.expand_dims(
+        obj_delta_v, axis=-1
+    ).squeeze(
+        axis=-1
+    )  # (n_t-1, n_l)
+    const_v_pred = (
+        0.5
+        * jnp.expand_dims(obj_delta_v, axis=-2)
+        @ mjx_data.qM[1:, obj_qvel_idx, :][..., obj_qvel_idx]
+        @ jnp.expand_dims(obj_delta_v, axis=-1)
+    ).squeeze(
+        axis=[-1, -2]
+    )  # (n_t-1,)
+
+    ### Complementarity
+    # Note: efc pyramids are *always* contiguous and align with contact.dist
+    n_contact = mjx_data.contact.dist.shape[-1]
+    efc_to_normal = jax.scipy.linalg.block_diag(
+        *([jnp.ones(4)] * n_contact)
+    )  # Sum over pyramid to get normal
+    q_comp = (mjx_data.contact.dist @ efc_to_normal).squeeze(axis=-1)  # (n_t-1, n_l)
+
     breakpoint()
 
     # Run QP optimization
@@ -509,11 +544,9 @@ def loss_diffsim(
         for geom_name in measurements.keys()
         if "contact_normal_W" in measurements[geom_name]
     }
-    # Mujoco wants us to use _impl
-    # pylint: disable=protected-access
     phis = {
         geom_name: jnp.sum(
-            data_sim._impl.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
+            data_sim.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
             axis=-1,
             keepdims=True,
         )
@@ -523,7 +556,7 @@ def loss_diffsim(
         geom_name: jnp.mean(
             jnp.sum(
                 contact_mask[jnp.newaxis, :, jnp.newaxis]
-                * data_sim._impl.contact.frame[..., 0, :],
+                * data_sim.contact.frame[..., 0, :],
                 axis=-2,
                 keepdims=True,
             ),
@@ -576,9 +609,9 @@ def loss_diffsim(
 
     # Add Penetration Loss, any contact_id for the learned object
     dist_pen = jnp.maximum(
-        -data_sim._impl.contact.dist
+        -data_sim.contact.dist
         * mjx_util.contactids_from_geoms(model, params[1].keys())[jnp.newaxis, :],
-        jnp.zeros_like(data_sim._impl.contact.dist),
+        jnp.zeros_like(data_sim.contact.dist),
     )
     loss["penetration"] = hyperparams.w_pen * jnp.sum(
         dist_pen,
@@ -591,7 +624,7 @@ def loss_diffsim(
     loss["reg_grounded"] = hyperparams.reg_grounded * jnp.sum(
         jnp.abs(
             (
-                data_sim._impl.contact.dist
+                data_sim.contact.dist
                 * mjx_util.contactids_from_collision_geoms(
                     model, [hyperparams.ground_geom], params[1].keys()
                 )
