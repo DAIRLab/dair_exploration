@@ -8,7 +8,7 @@ The main contents of this file are as follows:
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import operator
 import time
@@ -21,6 +21,7 @@ import mujoco
 from mujoco import mjx
 import numpy as np
 import optax
+from mpax import create_qp, raPDHG
 
 from dair_exploration import file_util, mjx_util, data_util
 from dair_exploration.gui_util import MJXMeshcatVisualizer
@@ -356,7 +357,12 @@ class LearningHyperparameters:
     normal_var: float = (
         0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
     )
-    w_pen: float = 0.0  # multiplier on penetration in m
+    w_pen: float = 0.0  # cost/m
+    w_q_pred: float = 1e0  # cost/J
+    w_v_pred: float = 1e0  # cost/J
+    w_comp: float = 1e0  # cost/J
+    w_diss: float = 1e0  # cost/J
+    w_elas: float = 1e0  # cost/J
 
     # Regularizers
     reg_grounded: float = 1e1  # multiplier on distance from ground a T=0
@@ -364,6 +370,9 @@ class LearningHyperparameters:
 
     # Computation Parameters
     epsilon: float = 1e-8
+
+    # mpax solver Parameters
+    solver_args: dict = field(default_factory=dict)
 
 
 @gin.configurable(allowlist=["hyperparams"])
@@ -413,7 +422,7 @@ def loss_vimp(
             vel_traj,
         ),
     )
-    ### Prediction: Velocity Term
+    ### Prediction: Velocity Term (loss_v_pred)
     # Exclude robot predictions
     obj_qvel_idx = mjx_util.qvelidx_from_geom_names(model, list(params[1].keys()))
     delassus_objonly = (
@@ -444,8 +453,8 @@ def loss_vimp(
     qp_v_pred = delassus_objonly + hyperparams.epsilon * jnp.eye(
         delassus_objonly.shape[-1]
     )  # (n_t-1, n_l, n_l)
-    q_v_pred = -mjx_data.efc_J[1:, :, obj_qvel_idx] @ jnp.expand_dims(
-        obj_delta_v, axis=-1
+    q_v_pred = (
+        -mjx_data.efc_J[1:, :, obj_qvel_idx] @ jnp.expand_dims(obj_delta_v, axis=-1)
     ).squeeze(
         axis=-1
     )  # (n_t-1, n_l)
@@ -458,17 +467,93 @@ def loss_vimp(
         axis=[-1, -2]
     )  # (n_t-1,)
 
-    ### Complementarity
+    ### Complementarity (loss_comp)
     # Note: efc pyramids are *always* contiguous and align with contact.dist
     n_contact = mjx_data.contact.dist.shape[-1]
     efc_to_normal = jax.scipy.linalg.block_diag(
         *([jnp.ones(4)] * n_contact)
-    )  # Sum over pyramid to get normal
-    q_comp = (mjx_data.contact.dist @ efc_to_normal).squeeze(axis=-1)  # (n_t-1, n_l)
+    )  # Sum over pyramid to get normal, (n_c, n_l)
+    q_comp = mjx_data.contact.dist[1:] @ efc_to_normal  # (n_t-1, n_l)
 
-    breakpoint()
+    ### Inelasticity (loss_elas)
+    normal_velocities = (
+        efc_to_normal
+        @ mjx_data.efc_J[1:, :, obj_qvel_idx]
+        @ jnp.expand_dims(mjx_data.qvel[1:, obj_qvel_idx], axis=-1)
+    )  # (n_t-1, n_c, 1)
+
+    q_elas = (
+        jnp.clip(normal_velocities.squeeze(axis=-1), a_min=0.0) @ efc_to_normal
+    )  # (n_t-1, n_l)
+
+    ### Max Power Dissipation (loss_diss)
+    # Assume friction is constant across n_t
+    # See: https://mujoco.readthedocs.io/en/stable/_images/contact_frame.svg
+    # Only m_1 and m_2 (no torsion), across all contacts
+    efc_to_tangent = jax.scipy.linalg.block_diag(
+        *(
+            jnp.array(
+                [
+                    [
+                        mjx_data.contact.friction[0, :, 0],
+                        -mjx_data.contact.friction[0, :, 0],
+                        jnp.zeros_like(mjx_data.contact.friction[0, :, 0]),
+                        jnp.zeros_like(mjx_data.contact.friction[0, :, 0]),
+                    ],
+                    [
+                        jnp.zeros_like(mjx_data.contact.friction[0, :, 0]),
+                        jnp.zeros_like(mjx_data.contact.friction[0, :, 0]),
+                        mjx_data.contact.friction[0, :, 1],
+                        -mjx_data.contact.friction[0, :, 1],
+                    ],
+                ]
+            ).transpose([2, 0, 1])
+        )
+    )  # (n_tan, n_l)
+    sliding_velocities = (
+        efc_to_tangent
+        @ mjx_data.efc_J[1:, :, obj_qvel_idx]
+        @ jnp.expand_dims(mjx_data.qvel[1:, obj_qvel_idx], axis=-1)
+    ).squeeze(
+        axis=-1
+    )  # (n_t-1, n_tan)
+    # Need non-0 norm for grad calculation, hence add eps to norm()
+    sliding_speeds = jnp.linalg.norm(
+        sliding_velocities.reshape(-1, n_contact, 2), axis=-1
+    )  # (n_t-1, n_c)
+
+    q_diss = jnp.hstack([sliding_speeds, sliding_velocities]) @ jnp.vstack(
+        [efc_to_normal, efc_to_tangent]
+    )  # (n_t-1, n_c + n_tan) * (n_c + n_tan, n_l) = (n_t-1, n_l)
 
     # Run QP optimization
+    # Envelope theorem guarantees that gradient of loss w.r.t. parameters
+    # can ignore the gradient of the impulses w.r.t. the QCQP parameters.
+    qp_final = jax.lax.stop_gradient(hyperparams.w_v_pred * qp_v_pred)
+    q_final = jax.lax.stop_gradient(
+        hyperparams.w_v_pred * q_v_pred
+        + hyperparams.w_comp * q_comp
+        + hyperparams.w_diss * q_diss
+        + hyperparams.w_elas * q_elas
+    )
+    breakpoint()
+    impulses = (
+        raPDHG(**hyperparams.solver_args)
+        .optimize(
+            create_qp(
+                Q=qp_final,
+                c=q_final.T,
+                A=jnp.zeros((0, q_final.shape[-1])),
+                b=jnp.zeros(0),
+                G=jnp.zeros((0, q_final.shape[-1])),
+                h=jnp.zeros(0),
+                l=jnp.zeros(q_final.shape[-1]),
+                u=jnp.full((q_final.shape[-1],), jnp.inf),
+            ),
+        )
+        .primal_solution
+    )
+    breakpoint()
 
     # Record contactnets loss terms
 
