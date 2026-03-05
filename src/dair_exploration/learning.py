@@ -752,6 +752,8 @@ def loss_vimp(
         model, mjx_data, measurements, params[1].keys(), hyperparams
     )
 
+    # TODO: NO loss should be negative, make sure of that
+
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss | loss_meas)),
         {
@@ -983,6 +985,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                     vis_data = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(
                         learned_model.active_model, vis_data
                     )
+                # TODO: Debug slow visualization code
                 gui_vis.update_visuals(
                     model=learned_model.active_model,
                     data_trajectory=mjx_util.data_unstack(vis_data),
