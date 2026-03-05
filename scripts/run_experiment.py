@@ -11,6 +11,7 @@ import time
 import gin
 import jax.numpy as jnp
 from mujoco import mjx
+import mpax
 import numpy as np
 import optax
 from scipy.spatial.transform import Rotation
@@ -282,6 +283,7 @@ def main_fn():
     gin.register(np.array, module="np")
     gin.register(np.random.uniform, module="np.random")
     gin.register(optax.adam, module="optax")
+    gin.register(mpax.raPDHG, module="mpax")
     print(f"Loading Config File: {get_config(args.config_file)}")
     gin.parse_config_file(get_config(args.config_file))
     # Pylint doesn't know about gin

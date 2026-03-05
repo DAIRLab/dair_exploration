@@ -24,6 +24,7 @@ results_dir.name = "wip"
 ## Data Config
 fixed_traj_len = 50
 TrajectorySet.pad_to = %fixed_traj_len
+TrajectorySet.pad_repeat_keys = ["position"]
 LearnedTrajectory.fixed_len = %fixed_traj_len
 LearnedTrajectory.geom_names = %learnable_geom_names
 LearnedModel.model_file = %model_file
@@ -42,6 +43,10 @@ LearningHyperparameters.normal_var = 0.01519224261  # cos(radians) [default 10 d
 LearningHyperparameters.w_pen = 1e0
 LearningHyperparameters.reg_grounded = 1e2
 LearningHyperparameters.ground_geom = "ground-geom"
+LearningHyperparameters.epsilon = 1e-4
+mpax.raPDHG.debug = False
+mpax.raPDHG.verbose = False
+mpax.raPDHG.iteration_limit = 1000
 
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names

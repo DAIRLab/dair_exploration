@@ -64,6 +64,10 @@ def qposidx_from_geom_name(model: mjx.Model, name: str) -> np.ndarray:
     return np.array(qposids)
 
 
+def qposidx_from_geom_names(model: mjx.Model, names: list[str]) -> np.ndarray:
+    return np.concatenate([qposidx_from_geom_name(model, name) for name in names])
+
+
 def qvelidx_from_geom_name(model: mjx.Model, name: str) -> np.ndarray:
     bodyid = bodyid_from_geomid(model, geomid_from_geom_name(model, name))
     qvelids = []

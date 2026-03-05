@@ -8,7 +8,7 @@ The main contents of this file are as follows:
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import operator
 import time
@@ -157,7 +157,9 @@ class LearnedModel:
 
     @staticmethod
     def write_params_to_model(
-        params: dict[str, dict[str, jax.Array]], model: mjx.Model
+        params: dict[str, dict[str, jax.Array]],
+        model: mjx.Model,
+        needs_sim: bool = True,
     ) -> mjx.Model:
         """Write parameter dictionary to the active model in a jax-traceable fashion"""
         for geom_name in params.keys():
@@ -181,6 +183,10 @@ class LearnedModel:
                     raise NotImplementedError(
                         f"No implementation for parameter {param_name}"
                     )
+        # Margin > Gap can be useful for non-sim computations to generate
+        # "Inactive" Contacts
+        if not needs_sim:
+            model = model.replace(geom_gap=jnp.zeros_like(model.geom_gap))
         return model
 
 
@@ -308,7 +314,7 @@ class LearnedTrajectory(Sequence):
         """Write parameter array from (padded) input to corresponding trajectory"""
         for geom_name, geom_traj in self._params.items():
             pad_len = (
-                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ]) + 2)
+                self._fixed_len - (len(geom_traj[TrajParamKey.TRAJQ][idx]) + 2)
                 if self._fixed_len > 0
                 else 0
             )
@@ -329,6 +335,38 @@ class LearnedTrajectory(Sequence):
                 (pad_len + 1) : -1
             ]
             geom_traj[TrajParamKey.Q0][idx + 1] = new_traj[geom_name]["position"][-1:]
+
+    def get_full_trajectory(self):
+        """Concat all elements into a single full trajectory"""
+        ret = {}
+        for geom_name, geom_traj in self._params.items():
+            ret[geom_name] = {}
+            ret[geom_name]["position"] = jnp.concatenate(
+                [
+                    jnp.concatenate(
+                        [
+                            geom_traj[TrajParamKey.Q0][idx],
+                            geom_traj[TrajParamKey.TRAJQ][idx],
+                        ]
+                    )
+                    for idx in range(len(geom_traj[TrajParamKey.TRAJQ]))
+                ]
+                + [geom_traj[TrajParamKey.Q0][-1]]
+            )
+            n_v = geom_traj[TrajParamKey.TRAJV][0].shape[-1]
+            ret[geom_name]["velocity"] = jnp.concatenate(
+                [
+                    jnp.concatenate(
+                        [
+                            jnp.zeros((1, n_v)),
+                            geom_traj[TrajParamKey.TRAJV][idx],
+                        ]
+                    )
+                    for idx in range(len(geom_traj[TrajParamKey.TRAJV]))
+                ]
+                + [jnp.zeros((1, n_v))]
+            )
+        return ret
 
     def write_to_file(self, traj_name: str = "out"):
         """Write current spec to file"""
@@ -371,8 +409,108 @@ class LearningHyperparameters:
     # Computation Parameters
     epsilon: float = 1e-8
 
-    # mpax solver Parameters
-    solver_args: dict = field(default_factory=dict)
+
+def _get_measurement_loss_and_outputs(
+    model: mjx.Model,
+    data_stacked: mjx.Data,
+    measurements: dict[str, dict[str, jax.Array]],
+    obj_geom_names: list[str],
+    hyperparams: LearningHyperparameters,
+) -> Any:
+    """Return the measurement loss and phis/normals for a given stack of data against the measurements."""
+    assert len(obj_geom_names) == 1  # Only 1 object supported
+    contact_masks = {
+        geom_name: mjx_util.contactids_from_collision_geoms(
+            model, [geom_name], obj_geom_names
+        )
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
+    phis = {
+        geom_name: jnp.sum(
+            data_stacked.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
+            axis=-1,
+            keepdims=True,
+        )
+        for geom_name, contact_mask in contact_masks.items()
+    }
+    normals = {
+        geom_name: jnp.mean(
+            jnp.sum(
+                contact_mask[jnp.newaxis, :, jnp.newaxis]
+                * data_stacked.contact.frame[..., 0, :],
+                axis=-2,
+                keepdims=True,
+            ),
+            axis=-2,
+        )
+        for geom_name, contact_mask in contact_masks.items()
+    }
+
+    # Compare outputs to measurements for loss
+    loss = {}
+    contact_bools = {
+        geom_name: jnp.round(
+            jnp.linalg.norm(
+                measurements[geom_name]["contact_normal_W"], axis=-1, keepdims=True
+            )
+        )
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
+    meas_normals = {
+        geom_name: measurements[geom_name]["contact_normal_W"]
+        for geom_name in measurements.keys()
+        if "contact_normal_W" in measurements[geom_name]
+    }
+
+    phi_alpha = (
+        np.log(np.reciprocal(hyperparams.phi_ci) - 1.0) / hyperparams.phi_nominal
+    )
+
+    loss["meas_normal"] = jax.tree.map(
+        lambda normal, meas_normal, contact_bool, normal_var=hyperparams.normal_var: 0.5
+        * contact_bool
+        * jnp.reciprocal(normal_var)
+        * (1.0 - jnp.sum(normal * meas_normal, axis=-1, keepdims=True)),
+        normals,
+        meas_normals,
+        contact_bools,
+    )
+
+    loss["meas_contact"] = jax.tree.map(
+        lambda phi, contact_bool, phi_alpha=phi_alpha: (contact_bool - 1.0)
+        * phi_alpha
+        * phi
+        - jax.nn.log_sigmoid(
+            -(phi_alpha * phi)
+        ),  # -logsigmoid(-x) == log(1+exp(x)), more numerically stable
+        phis,
+        contact_bools,
+    )
+
+    # Add Penetration Loss, any contact_id for the learned object
+    dist_pen = jnp.maximum(
+        -data_stacked.contact.dist
+        * mjx_util.contactids_from_geoms(model, obj_geom_names)[jnp.newaxis, :],
+        jnp.zeros_like(data_stacked.contact.dist),
+    )
+    loss["pen"] = hyperparams.w_pen * jnp.sum(dist_pen, axis=-1)
+
+    # Add ground regularizer
+    # Note: collision_convex.py adjusted so non-unique witness points aren't set to 1.
+    loss["reg_grounded"] = hyperparams.reg_grounded * jnp.sum(
+        jnp.abs(
+            (
+                data_stacked.contact.dist
+                * mjx_util.contactids_from_collision_geoms(
+                    model, [hyperparams.ground_geom], obj_geom_names
+                )
+            )[0, ...]
+        )
+    )
+
+    return loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}
 
 
 @gin.configurable(allowlist=["hyperparams"])
@@ -396,7 +534,7 @@ def loss_vimp(
         * Auxiliary data (e.g. individual loss / regularization terms)
     """
     # Write params to model and data objects
-    model = LearnedModel.write_params_to_model(params[0], base_model)
+    model = LearnedModel.write_params_to_model(params[0], base_model, needs_sim=False)
     pose_traj = {
         geom_name: measurements[geom_name]["position"]
         for geom_name in measurements.keys()
@@ -422,7 +560,7 @@ def loss_vimp(
             vel_traj,
         ),
     )
-    ### Prediction: Velocity Term (loss_v_pred)
+    ### Prediction: Velocity Term (q_v_pred)
     # Exclude robot predictions
     obj_qvel_idx = mjx_util.qvelidx_from_geom_names(model, list(params[1].keys()))
     delassus_objonly = (
@@ -463,11 +601,9 @@ def loss_vimp(
         * jnp.expand_dims(obj_delta_v, axis=-2)
         @ mjx_data.qM[1:, obj_qvel_idx, :][..., obj_qvel_idx]
         @ jnp.expand_dims(obj_delta_v, axis=-1)
-    ).squeeze(
-        axis=[-1, -2]
-    )  # (n_t-1,)
+    )  # (n_t-1, 1, 1)
 
-    ### Complementarity (loss_comp)
+    ### Complementarity (q_comp)
     # Note: efc pyramids are *always* contiguous and align with contact.dist
     n_contact = mjx_data.contact.dist.shape[-1]
     efc_to_normal = jax.scipy.linalg.block_diag(
@@ -475,7 +611,7 @@ def loss_vimp(
     )  # Sum over pyramid to get normal, (n_c, n_l)
     q_comp = mjx_data.contact.dist[1:] @ efc_to_normal  # (n_t-1, n_l)
 
-    ### Inelasticity (loss_elas)
+    ### Inelasticity (q_elas)
     normal_velocities = (
         efc_to_normal
         @ mjx_data.efc_J[1:, :, obj_qvel_idx]
@@ -486,7 +622,7 @@ def loss_vimp(
         jnp.clip(normal_velocities.squeeze(axis=-1), a_min=0.0) @ efc_to_normal
     )  # (n_t-1, n_l)
 
-    ### Max Power Dissipation (loss_diss)
+    ### Max Power Dissipation (q_diss)
     # Assume friction is constant across n_t
     # See: https://mujoco.readthedocs.io/en/stable/_images/contact_frame.svg
     # Only m_1 and m_2 (no torsion), across all contacts
@@ -536,30 +672,94 @@ def loss_vimp(
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    breakpoint()
-    impulses = (
-        raPDHG(**hyperparams.solver_args)
-        .optimize(
-            create_qp(
-                Q=qp_final,
-                c=q_final.T,
-                A=jnp.zeros((0, q_final.shape[-1])),
-                b=jnp.zeros(0),
-                G=jnp.zeros((0, q_final.shape[-1])),
-                h=jnp.zeros(0),
-                l=jnp.zeros(q_final.shape[-1]),
-                u=jnp.full((q_final.shape[-1],), jnp.inf),
-            ),
+    impulses_raw = jax.vmap(
+        lambda Q_final, q_final: (
+            raPDHG()
+            .optimize(
+                create_qp(
+                    Q=Q_final,
+                    c=q_final.T,
+                    A=jnp.zeros((0, q_final.shape[-1])),
+                    b=jnp.zeros(0),
+                    G=jnp.eye(q_final.shape[-1]),
+                    h=jnp.zeros(q_final.shape[-1]),
+                    l=jnp.zeros(q_final.shape[-1]),
+                    u=jnp.full((q_final.shape[-1],), jnp.inf),
+                ),
+            )
+            .primal_solution
         )
-        .primal_solution
-    )
-    breakpoint()
+    )(qp_final, q_final)
+    impulses = jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))  # (n_t-1, n_l)
 
     # Record contactnets loss terms
+    loss = {}
+    ### Loss: Prediction: Velocity (loss_v_pred)
+    loss["v_pred"] = hyperparams.w_v_pred * (
+        0.5 * impulses[..., jnp.newaxis, :] @ qp_v_pred @ impulses[..., jnp.newaxis]
+        + impulses[..., jnp.newaxis, :] @ q_v_pred[..., jnp.newaxis]
+        + const_v_pred
+    ).squeeze(
+        axis=[-1, -2]
+    )  # (n_t-1,)
 
-    # Record measurement loss terms
+    ### Loss: Complementarity (loss_comp)
+    loss["comp"] = hyperparams.w_comp * (
+        impulses[..., jnp.newaxis, :] @ q_comp[..., jnp.newaxis]
+    ).squeeze(
+        axis=[-1, -2]
+    )  # (n_t-1,)
 
-    return 0.0, {"loss": 0.0}
+    ### Loss: Max Power Dissipation (loss_diss)
+    loss["diss"] = hyperparams.w_diss * (
+        impulses[..., jnp.newaxis, :] @ q_diss[..., jnp.newaxis]
+    ).squeeze(
+        axis=[-1, -2]
+    )  # (n_t-1,)
+
+    ### Loss: Inelasticity (loss_elas)
+    loss["diss"] = hyperparams.w_elas * (
+        impulses[..., jnp.newaxis, :] @ q_elas[..., jnp.newaxis]
+    ).squeeze(
+        axis=[-1, -2]
+    )  # (n_t-1,)
+
+    ### Loss: Prediction: Position (loss_q_pred)
+    # Want to access internal position euler integrator for MJX
+    # pylint: disable=protected-access
+    q_pred = jax.vmap(
+        lambda qpos, qvel, delta_t, model=model: mjx._src.scan.flat(
+            model,
+            lambda *args, delta_t=delta_t: mjx._src.forward._integrate_pos(
+                *args, dt=delta_t
+            ),
+            "jqv",
+            "q",
+            model.jnt_type,
+            qpos,
+            qvel,
+        )
+    )(mjx_data.qpos[:-1], mjx_data.qvel[1:], delta_t.squeeze(axis=-1))
+    obj_qpos_idx = mjx_util.qposidx_from_geom_names(model, list(params[1].keys()))
+    # TODO: have more general configuration difference rather than L2 norm
+    loss["q_pred"] = hyperparams.w_q_pred * jnp.sum(
+        (q_pred[..., obj_qpos_idx] - mjx_data.qpos[1:, obj_qpos_idx]) ** 2, axis=-1
+    )
+
+    ### Measurement Losses (Contact Bool / Normal)
+    # And Regularization (Penetration / Grounded)
+    loss_meas, outputs = _get_measurement_loss_and_outputs(
+        model, mjx_data, measurements, params[1].keys(), hyperparams
+    )
+
+    return (
+        jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss | loss_meas)),
+        {
+            "loss": loss | loss_meas,
+            "outputs": outputs,
+            "data": mjx_data,
+        },
+    )
 
 
 @gin.configurable(allowlist=["hyperparams"])
@@ -583,7 +783,7 @@ def loss_diffsim(
         * Auxiliary data (e.g. individual loss / regularization terms)
     """
     # Write params to model and data objects
-    model = LearnedModel.write_params_to_model(params[0], base_model)
+    model = LearnedModel.write_params_to_model(params[0], base_model, needs_sim=True)
     init_data = mjx_util.write_qpos_to_data(
         model,
         mjx.make_data(model),
@@ -621,108 +821,16 @@ def loss_diffsim(
     # mjx.Data w/ leading T dimension
 
     # Compute outputs (phi, normal)
-    assert len(params[1].keys()) == 1  # Only 1 object supported
-    contact_masks = {
-        geom_name: mjx_util.contactids_from_collision_geoms(
-            model, [geom_name], params[1].keys()
-        )
-        for geom_name in measurements.keys()
-        if "contact_normal_W" in measurements[geom_name]
-    }
-    phis = {
-        geom_name: jnp.sum(
-            data_sim.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
-            axis=-1,
-            keepdims=True,
-        )
-        for geom_name, contact_mask in contact_masks.items()
-    }
-    normals = {
-        geom_name: jnp.mean(
-            jnp.sum(
-                contact_mask[jnp.newaxis, :, jnp.newaxis]
-                * data_sim.contact.frame[..., 0, :],
-                axis=-2,
-                keepdims=True,
-            ),
-            axis=-2,
-        )
-        for geom_name, contact_mask in contact_masks.items()
-    }
-
-    # Compare outputs to measurements for loss
-    loss = {}
-    contact_bools = {
-        geom_name: jnp.round(
-            jnp.linalg.norm(
-                measurements[geom_name]["contact_normal_W"], axis=-1, keepdims=True
-            )
-        )
-        for geom_name in measurements.keys()
-        if "contact_normal_W" in measurements[geom_name]
-    }
-    meas_normals = {
-        geom_name: measurements[geom_name]["contact_normal_W"]
-        for geom_name in measurements.keys()
-        if "contact_normal_W" in measurements[geom_name]
-    }
-
-    phi_alpha = (
-        np.log(np.reciprocal(hyperparams.phi_ci) - 1.0) / hyperparams.phi_nominal
-    )
-
-    loss["normal"] = jax.tree.map(
-        lambda normal, meas_normal, contact_bool, normal_var=hyperparams.normal_var: 0.5
-        * contact_bool
-        * jnp.reciprocal(normal_var)
-        * (1.0 - jnp.sum(normal * meas_normal, axis=-1, keepdims=True)),
-        normals,
-        meas_normals,
-        contact_bools,
-    )
-
-    loss["contact_bool"] = jax.tree.map(
-        lambda phi, contact_bool, phi_alpha=phi_alpha: (contact_bool - 1.0)
-        * phi_alpha
-        * phi
-        - jax.nn.log_sigmoid(
-            -(phi_alpha * phi)
-        ),  # -logsigmoid(-x) == log(1+exp(x)), more numerically stable
-        phis,
-        contact_bools,
-    )
-
-    # Add Penetration Loss, any contact_id for the learned object
-    dist_pen = jnp.maximum(
-        -data_sim.contact.dist
-        * mjx_util.contactids_from_geoms(model, params[1].keys())[jnp.newaxis, :],
-        jnp.zeros_like(data_sim.contact.dist),
-    )
-    loss["penetration"] = hyperparams.w_pen * jnp.sum(
-        dist_pen,
-        axis=-1,
-        keepdims=True,
-    )
-
-    # Add ground regularizer
-    # TODO: ignore those equal to 1 (not fatal, but makes loss look high)
-    loss["reg_grounded"] = hyperparams.reg_grounded * jnp.sum(
-        jnp.abs(
-            (
-                data_sim.contact.dist
-                * mjx_util.contactids_from_collision_geoms(
-                    model, [hyperparams.ground_geom], params[1].keys()
-                )
-            )[0, ...]
-        )
+    loss, outputs = _get_measurement_loss_and_outputs(
+        model, data_sim, measurements, params[1].keys(), hyperparams
     )
 
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss)),
         {
             "loss": loss,
-            "outputs": {"phis": phis, "normals": normals, "dist_pen": dist_pen},
-            "data_sim": data_sim,
+            "outputs": outputs,
+            "data": data_sim,
         },
     )
 
@@ -803,14 +911,9 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     for epoch in range(epoch_start, epoch_start + n_epochs):
         start = time.time()
 
+        aux_list = []
+
         for batch_idx in range(n_batch):
-            test_loss = loss_vimp(
-                get_learning_params(batch_idx),
-                get_data(batch_idx),
-                learned_model.base_model,
-                hyperparams,
-            )
-            breakpoint()
             # Compute Grad + auxiliary data
             grads, aux = loss_fn(
                 get_learning_params(batch_idx),
@@ -818,6 +921,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                 learned_model.base_model,
                 hyperparams,
             )
+            aux_list.append(aux)
 
             # Gradient Step
             updates, opt_state = optimizer.update(grads, opt_state)
@@ -826,7 +930,9 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             )
 
         # Print data
-        loss_total = jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, aux["loss"]))
+        loss_total = jax.tree.reduce(
+            operator.add, jax.tree.map(jnp.sum, [aux["loss"] for aux in aux_list])
+        )
         print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
 
         # Visualization / File updates
@@ -834,11 +940,51 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             print("\t Writing to File...")
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")
-            file_util.write_object(aux, "learning", f"aux_{epoch:04d}.pkl")
+            file_util.write_object(aux_list, "learning", f"aux_{epoch:04d}.pkl")
             if gui_vis is not None:
                 print("\t Visualizing...")
+                vis_data = None
+                if loss_style == LossStyle.DIFFSIM:
+                    vis_data = aux_list[0]["data"]
+                elif loss_style == LossStyle.VIMP:
+                    full_traj = learned_traj.get_full_trajectory()
+                    pose_traj = {
+                        geom_name: full_traj[geom_name]["position"]
+                        for geom_name in full_traj.keys()
+                    }
+                    vel_traj = {
+                        geom_name: full_traj[geom_name]["velocity"]
+                        for geom_name in full_traj.keys()
+                    }
+                    vis_data = jax.vmap(
+                        mjx_util.write_qvel_to_data,
+                        in_axes=(
+                            None,
+                            0,
+                            {geom_name: 0 for geom_name in pose_traj.keys()},
+                        ),
+                    )(
+                        learned_model.active_model,
+                        jax.vmap(
+                            mjx_util.write_qpos_to_data,
+                            in_axes=(
+                                None,
+                                None,
+                                {geom_name: 0 for geom_name in pose_traj.keys()},
+                            ),
+                        )(
+                            learned_model.active_model,
+                            mjx.make_data(learned_model.active_model),
+                            pose_traj,
+                        ),
+                        vel_traj,
+                    )
+                    # Make sure xpos and qpos are in sync
+                    vis_data = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(
+                        learned_model.active_model, vis_data
+                    )
                 gui_vis.update_visuals(
                     model=learned_model.active_model,
-                    data_trajectory=mjx_util.data_unstack(aux["data_sim"]),
+                    data_trajectory=mjx_util.data_unstack(vis_data),
                 )
     ## END training loop
