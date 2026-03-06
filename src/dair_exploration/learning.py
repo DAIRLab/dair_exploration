@@ -419,7 +419,9 @@ def _get_measurement_loss_and_outputs(
     obj_geom_names: list[str],
     hyperparams: LearningHyperparameters,
 ) -> Any:
-    """Return the measurement loss and phis/normals for a given stack of data against the measurements."""
+    """Return the measurement loss and phis/normals
+    for a given stack of data against the measurements.
+    """
     assert len(obj_geom_names) == 1  # Only 1 object supported
     contact_masks = {
         geom_name: mjx_util.contactids_from_collision_geoms(
@@ -517,8 +519,8 @@ def _get_measurement_loss_and_outputs(
 
 @jax.jit
 @jax.vmap
-def jit_vmap_solver(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
-    """vmap-ed OSQP solver with inequality constraints"""
+def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+    """vmap-ed OSQP solver with >0 constraints"""
     return (
         BoxOSQP()
         .run(
@@ -528,6 +530,35 @@ def jit_vmap_solver(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
         )
         .params.primal[0]  # (x, z), where Ax = z (but A == I so x == z)
     )
+
+
+# TODO: Make gin-config arguments
+mpax_optimize_jit = jax.jit(
+    raPDHG(
+        eps_abs=1e-4,
+        eps_rel=1e-4,
+        iteration_limit=100,
+        verbose=False,
+    ).optimize
+)
+
+
+@jax.jit
+@jax.vmap
+def jit_vmap_solver_mpax(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+    """vmap-ed mpax solver with >0 constraints"""
+    return mpax_optimize_jit(
+        create_qp(
+            Q=qp_solve,
+            c=q_solve.T,
+            A=jnp.zeros((0, q_solve.shape[-1])),
+            b=jnp.zeros(0),
+            G=jnp.eye(q_solve.shape[-1]),
+            h=jnp.zeros(q_solve.shape[-1]),
+            l=jnp.zeros(q_solve.shape[-1]),
+            u=jnp.full((q_solve.shape[-1],), jnp.inf),
+        ),
+    ).primal_solution
 
 
 def loss_vimp(
@@ -694,30 +725,12 @@ def loss_vimp(
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    # impulses_raw = jax.vmap(
-    #     lambda Q_final, q_final: (
-    #         raPDHG()
-    #         .optimize(
-    #             create_qp(
-    #                 Q=Q_final,
-    #                 c=q_final.T,
-    #                 A=jnp.zeros((0, q_final.shape[-1])),
-    #                 b=jnp.zeros(0),
-    #                 G=jnp.eye(q_final.shape[-1]),
-    #                 h=jnp.zeros(q_final.shape[-1]),
-    #                 l=jnp.zeros(q_final.shape[-1]),
-    #                 u=jnp.full((q_final.shape[-1],), jnp.inf),
-    #             ),
-    #         )
-    #         .primal_solution
-    #     )
-    # )(qp_final, q_final)
-    impulses_raw = jit_vmap_solver(qp_final, q_final)
+    impulses_raw = jit_vmap_solver_mpax(qp_final, q_final)
     impulses = jax.lax.stop_gradient(
         jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))
     )  # (n_t-1, n_l)
 
-    # Record contactnets loss terms
+    # Recorfor even relatively modest batch sizes d contactnets loss terms
     loss = {}
     ### Loss: Prediction: Velocity (loss_v_pred)
     loss["v_pred"] = hyperparams.w_v_pred * (
@@ -776,8 +789,6 @@ def loss_vimp(
     loss_meas, outputs = _get_measurement_loss_and_outputs(
         model, mjx_data, measurements, params[1].keys(), hyperparams
     )
-
-    # TODO: NO loss should be negative, make sure of that
 
     return (
         jax.tree.reduce(operator.add, jax.tree.map(jnp.sum, loss | loss_meas)),
@@ -899,7 +910,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     loss_style: LossStyle = LossStyle.DIFFSIM,
     optimizer_cls: optax.GradientTransformation = optax.adam,
     vis_update: int = 0,
-) -> None:  # TODO: return loss statistics
+) -> list[list[Any]]:
     """Train and update the learned model and trajectory on the measurements.
 
         * Initialize optax (gin-configured).
@@ -909,10 +920,9 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         ** Use optax to update parameters
         ** Write new parameters to the learned model / traj
         ** Write new parameters to file
-        ** TODO: Record loss statistics and write to file
         * If Ctrl-C is called, finish current epoch and return
 
-    Return (TODO) loss statistics; Learned Model/Trajectory are mutated.
+    Return loss statistics and auxiliary data size (n_epoch, n_batch); Learned Model/Trajectory are mutated.
     """
 
     # Configure loss, params, and optimizer
@@ -953,6 +963,8 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     hyperparams = LearningHyperparameters()
 
+    ret_aux = []
+
     for epoch in range(epoch_start, epoch_start + n_epochs):
         # test_loss = loss_vimp(
         #     get_learning_params(0), get_data(0), learned_model.base_model, hyperparams
@@ -986,7 +998,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         print(f"({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
 
         # Visualization / File updates
-        if vis_update > 0 and epoch % vis_update == 0:
+        if vis_update > 0 and (epoch + 1) % vis_update == 0:
             print("\t Writing to File...")
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")
@@ -1038,4 +1050,6 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                     model=learned_model.active_model,
                     data_trajectory=mjx_util.data_unstack(vis_data),
                 )
+        ret_aux.append(aux_list)
     ## END training loop
+    return ret_aux

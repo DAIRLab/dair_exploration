@@ -14,7 +14,7 @@ learnable_geom_names = ["object-geom"]
 fingertip_geom_names = ["spherebot1-geom", "spherebot2-geom"]
 default_dt = 0.03333333333333333 # 30 Hz
 traj_len_s = 1.0 # s, how long each trajectory is
-traj_len_dts = 31 # 30Hz + 1
+fixed_traj_len = 32 # Minimum 30Hz + 1
 model_file = "default.xml"
 
 ## Main Config
@@ -22,7 +22,6 @@ main.model_file = %model_file
 results_dir.name = "wip"
 
 ## Data Config
-fixed_traj_len = 32
 TrajectorySet.pad_to = %fixed_traj_len
 TrajectorySet.pad_repeat_keys = ["position"]
 LearnedTrajectory.fixed_len = %fixed_traj_len
@@ -33,7 +32,7 @@ LearnedModel.param_spec = {"object-geom": ["size"]}
 ## Training Config
 train_epochs.optimizer_cls = @optax.adam
 optax.adam.learning_rate = 1e-3
-train_epochs.vis_update = 1
+train_epochs.vis_update = 101
 
 # Hyperparameters
 train_epochs.loss_style = %LossStyle.VIMP
@@ -56,7 +55,7 @@ LearningHyperparameters.w_elas = 1e0
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names
 TrifingerLCMService.object_geom_name = %true_geom_name
-TrifingerLCMService.traj_time_len = 1.0
+TrifingerLCMService.traj_time_len = %traj_len_s
 TrifingerLCMService.lcm_channels = {
 	"fingertips_position": "FINGERTIPS_POSITION_SIMULATION", # lcmt_fingertips_position "FINGERTIPS_POSITION"
 	"object_state": "CUBE_STATE_SIMULATION", # lcmt_object_state
