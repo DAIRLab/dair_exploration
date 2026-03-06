@@ -10,6 +10,7 @@ The main contents of this file are as follows:
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 import operator
 import time
 from typing import Optional, Any
@@ -22,6 +23,7 @@ from mujoco import mjx
 import numpy as np
 import optax
 from mpax import create_qp, raPDHG
+from jaxopt import BoxOSQP
 
 from dair_exploration import file_util, mjx_util, data_util
 from dair_exploration.gui_util import MJXMeshcatVisualizer
@@ -513,7 +515,21 @@ def _get_measurement_loss_and_outputs(
     return loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}
 
 
-@gin.configurable(allowlist=["hyperparams"])
+@jax.jit
+@jax.vmap
+def jit_vmap_solver(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+    """vmap-ed OSQP solver with inequality constraints"""
+    return (
+        BoxOSQP()
+        .run(
+            params_obj=(qp_solve, q_solve),
+            params_eq=jnp.eye(qp_solve.shape[-1]),
+            params_ineq=(jnp.zeros_like(q_solve), jnp.full(q_solve.shape, jnp.inf)),
+        )
+        .params.primal[0]  # (x, z), where Ax = z (but A == I so x == z)
+    )
+
+
 def loss_vimp(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
@@ -609,7 +625,13 @@ def loss_vimp(
     efc_to_normal = jax.scipy.linalg.block_diag(
         *([jnp.ones(4)] * n_contact)
     )  # Sum over pyramid to get normal, (n_c, n_l)
-    q_comp = mjx_data.contact.dist[1:] @ efc_to_normal  # (n_t-1, n_l)
+    q_comp = (
+        jnp.nan_to_num(jnp.reciprocal(delta_t), posinf=0.0, neginf=0.0)
+        * jnp.maximum(
+            mjx_data.contact.dist[1:], jnp.zeros_like(mjx_data.contact.dist[1:])
+        )
+        @ efc_to_normal
+    )  # (n_t-1, n_l)
 
     ### Inelasticity (q_elas)
     normal_velocities = (
@@ -672,25 +694,28 @@ def loss_vimp(
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    impulses_raw = jax.vmap(
-        lambda Q_final, q_final: (
-            raPDHG()
-            .optimize(
-                create_qp(
-                    Q=Q_final,
-                    c=q_final.T,
-                    A=jnp.zeros((0, q_final.shape[-1])),
-                    b=jnp.zeros(0),
-                    G=jnp.eye(q_final.shape[-1]),
-                    h=jnp.zeros(q_final.shape[-1]),
-                    l=jnp.zeros(q_final.shape[-1]),
-                    u=jnp.full((q_final.shape[-1],), jnp.inf),
-                ),
-            )
-            .primal_solution
-        )
-    )(qp_final, q_final)
-    impulses = jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))  # (n_t-1, n_l)
+    # impulses_raw = jax.vmap(
+    #     lambda Q_final, q_final: (
+    #         raPDHG()
+    #         .optimize(
+    #             create_qp(
+    #                 Q=Q_final,
+    #                 c=q_final.T,
+    #                 A=jnp.zeros((0, q_final.shape[-1])),
+    #                 b=jnp.zeros(0),
+    #                 G=jnp.eye(q_final.shape[-1]),
+    #                 h=jnp.zeros(q_final.shape[-1]),
+    #                 l=jnp.zeros(q_final.shape[-1]),
+    #                 u=jnp.full((q_final.shape[-1],), jnp.inf),
+    #             ),
+    #         )
+    #         .primal_solution
+    #     )
+    # )(qp_final, q_final)
+    impulses_raw = jit_vmap_solver(qp_final, q_final)
+    impulses = jax.lax.stop_gradient(
+        jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))
+    )  # (n_t-1, n_l)
 
     # Record contactnets loss terms
     loss = {}
@@ -764,7 +789,18 @@ def loss_vimp(
     )
 
 
-@gin.configurable(allowlist=["hyperparams"])
+@partial(jax.jit, static_argnames=["hyperparams"])
+@partial(jax.grad, has_aux=True)
+def grad_vimp(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    base_model: mjx.Model,
+    hyperparams: LearningHyperparameters,
+) -> tuple[float, Any]:
+    """Gradient of loss_vimp"""
+    return loss_vimp(params, measurements, base_model, hyperparams)
+
+
 def loss_diffsim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
@@ -837,6 +873,20 @@ def loss_diffsim(
     )
 
 
+# Diffsim needs forward-mode (and it is faster with long graphs)
+# see https://github.com/google-deepmind/mujoco/issues/2259
+@partial(jax.jit, static_argnames=["hyperparams"])
+@partial(jax.jacfwd, has_aux=True)
+def grad_diffsim(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    base_model: mjx.Model,
+    hyperparams: LearningHyperparameters,
+) -> tuple[float, Any]:
+    """Gradient of loss_diffsim"""
+    return loss_diffsim(params, measurements, base_model, hyperparams)
+
+
 # Lots of configuration (using gin) for training
 @gin.configurable(allowlist=["loss_style", "optimizer_cls", "vis_update"])
 def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -866,19 +916,12 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     """
 
     # Configure loss, params, and optimizer
-    # loss_fn = jax.jit(jax.value_and_grad(loss_diffsim, has_aux=True))
-    # Diffsim needs forward-mode (and it is faster with long graphs)
-    # see https://github.com/google-deepmind/mujoco/issues/2259
     if loss_style == LossStyle.DIFFSIM:
         n_batch = 1
-        loss_fn = jax.jit(
-            jax.jacfwd(loss_diffsim, has_aux=True), static_argnames=["hyperparams"]
-        )
+        loss_fn = grad_diffsim
     elif loss_style == LossStyle.VIMP:
         n_batch = len(dataset)
-        loss_fn = jax.jit(
-            jax.grad(loss_vimp, has_aux=True), static_argnames=["hyperparams"]
-        )
+        loss_fn = grad_vimp
     else:
         raise NotImplementedError(f"Loss Style {loss_style} not supported.")
 
@@ -911,6 +954,11 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
     hyperparams = LearningHyperparameters()
 
     for epoch in range(epoch_start, epoch_start + n_epochs):
+        # test_loss = loss_vimp(
+        #     get_learning_params(0), get_data(0), learned_model.base_model, hyperparams
+        # )
+        # breakpoint()
+        print(f"{epoch:04d}...", end="", flush=True)
         start = time.time()
 
         aux_list = []
@@ -935,7 +983,7 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         loss_total = jax.tree.reduce(
             operator.add, jax.tree.map(jnp.sum, [aux["loss"] for aux in aux_list])
         )
-        print(f"{epoch:04d} ({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
+        print(f"({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
 
         # Visualization / File updates
         if vis_update > 0 and epoch % vis_update == 0:
@@ -982,8 +1030,8 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
                         vel_traj,
                     )
                     # Make sure xpos and qpos are in sync
-                    vis_data = jax.jit(jax.vmap(mjx.kinematics, in_axes=(None, 0)))(
-                        learned_model.active_model, vis_data
+                    vis_data = mjx_util.jit_vmap_kinematics(
+                        learned_model.base_model, vis_data
                     )
                 # TODO: Debug slow visualization code
                 gui_vis.update_visuals(

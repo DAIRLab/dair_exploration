@@ -171,8 +171,15 @@ def jit_step(model: mjx.Model, data: mjx.Data):
 
 @jax.jit
 def jit_forward(model: mjx.Model, data: mjx.Data):
-    """Simulation Step"""
+    """Forward Step"""
     return mjx.forward(model, data)
+
+
+@jax.jit
+@partial(jax.vmap, in_axes=(None, 0))
+def jit_vmap_kinematics(model: mjx.Model, data: mjx.Data):
+    """Kinematics Step"""
+    return mjx.kinematics(model, data)
 
 
 ## Diff Sim

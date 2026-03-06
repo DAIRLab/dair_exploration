@@ -25,6 +25,9 @@ def enable_jax_cache():
         "xla_gpu_per_fusion_autotune_cache_dir",
     )
 
+    # Add if trying to debug recompilation
+    # jax.config.update("jax_explain_cache_misses", True)
+
 
 def repo_dir() -> Path:
     """Get GIT repo dir when running inside of the git repository"""
