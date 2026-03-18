@@ -16,7 +16,7 @@ $ pip install -e .[dev]
 The default QP solver for this project is [mpax](https://github.com/MIT-Lu-Lab/MPAX). We additionally support [jaxopt](https://jaxopt.github.io/stable/) and [moreau](https://www.moreau.so/), which can be installed separately:
 ```
 $ pip install jaxopt
-$ pip install moreau[cuda] --extra-index-url https://pypi.fury.io/optimalintellect/
+$ pip install moreau[cuda13] --extra-index-url https://pypi.fury.io/optimalintellect/
 ```
 Moreau requires a license key and access token (i.e. username for `pypi.fury.io`). For more information, see the [installation documentation](https://docs.moreau.so/installation.html)
 

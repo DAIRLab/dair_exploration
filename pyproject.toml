@@ -18,7 +18,7 @@ classifiers = [
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 dependencies = [
-  "jax[cuda13]",
+  "jax[cuda13] >= 0.9.1",
   "optax",
   "mujoco-mjx",
   "gin-config", # Gin Configuration
