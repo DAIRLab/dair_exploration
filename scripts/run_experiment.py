@@ -139,6 +139,7 @@ def main(
         print(
             "\nUsage:\n"
             "e - Execute selected action + collect data\n"
+            "t - Train on collected data\n"
             "b - breakpoint()\n"
             "h - Print Help\n"
             "q - Quit\n"
@@ -151,7 +152,10 @@ def main(
             print("Ctrl-C pressed and not cleared, exiting!")
             break
 
-        command_char = input("Command $ ").split(" ")[0]
+        command_char = input("Command $ ")
+        if len(command_char) > 1:
+            print("Please only command one character.")
+            continue
 
         if command_char == "h":
             ## Print Help

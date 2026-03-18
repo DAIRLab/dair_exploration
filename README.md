@@ -1,10 +1,29 @@
 # DAIRLab Active Tactile Exploration
 [![linting: pylint](https://img.shields.io/badge/linting-pylint-yellowgreen)](https://github.com/pylint-dev/pylint)
 
-## API Documentation
-TODO
+## Installation
+Default installation can be done with pip:
+```
+$ pip install -e .
+```
+
+If you plan to contribute code, please additionally install linters.
+```
+$ pip install -e .[dev]
+```
+
+### Additional Solvers
+The default QP solver for this project is [mpax](https://github.com/MIT-Lu-Lab/MPAX). We additionally support [jaxopt](https://jaxopt.github.io/stable/) and [moreau](https://www.moreau.so/), which can be installed separately:
+```
+$ pip install jaxopt
+$ pip install moreau[cuda] --extra-index-url https://pypi.fury.io/optimalintellect/
+```
+Moreau requires a license key and access token (i.e. username for `pypi.fury.io`). For more information, see the [installation documentation](https://docs.moreau.so/installation.html)
 
 ## Running the Code
+TODO
+
+## API Documentation
 TODO
 
 ## Attribution notes

@@ -23,7 +23,6 @@ from mujoco import mjx
 import numpy as np
 import optax
 from mpax import create_qp, raPDHG
-from jaxopt import BoxOSQP
 
 from dair_exploration import file_util, mjx_util, data_util
 from dair_exploration.gui_util import MJXMeshcatVisualizer
@@ -385,7 +384,7 @@ class LossStyle(Enum):
 
 @gin.configurable
 @dataclass(frozen=True)
-class LearningHyperparameters:
+class LearningHyperparameters:  # pylint: disable=too-many-instance-attributes
     """Class to specify loss hyperparameters"""
 
     # Switches
@@ -517,20 +516,32 @@ def _get_measurement_loss_and_outputs(
     return loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}
 
 
-jaxopt_jit = jax.jit(BoxOSQP(implicit_diff=False, maxiter=100, tol=1e-4).run)
+try:
+    from jaxopt import BoxOSQP  # type: ignore
 
+    jaxopt_jit = jax.jit(BoxOSQP(implicit_diff=False, maxiter=100, tol=1e-4).run)
 
-@jax.jit
-@jax.vmap
-def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
-    """vmap-ed OSQP solver with >0 constraints"""
-    return jaxopt_jit(
-        params_obj=(qp_solve, q_solve),
-        params_eq=jnp.eye(qp_solve.shape[-1]),
-        params_ineq=(jnp.zeros_like(q_solve), jnp.full(q_solve.shape, jnp.inf)),
-    ).params.primal[
-        0
-    ]  # (x, z), where Ax = z (but A == I so x == z)
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+        """vmap-ed OSQP solver with >0 constraints"""
+        return jaxopt_jit(
+            params_obj=(qp_solve, q_solve),
+            params_eq=jnp.eye(qp_solve.shape[-1]),
+            params_ineq=(jnp.zeros_like(q_solve), jnp.full(q_solve.shape, jnp.inf)),
+        ).params.primal[
+            0
+        ]  # (x, z), where Ax = z (but A == I so x == z)
+
+except ImportError:
+
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+        """vmap-ed OSQP solver with >0 constraints"""
+        raise NotImplementedError(
+            "Jaxopt is not installed. Install with `pip install jaxopt`"
+        )
 
 
 # TODO: Make gin-config arguments
@@ -562,7 +573,7 @@ def jit_vmap_solver_mpax(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
     ).primal_solution
 
 
-def loss_vimp(
+def loss_vimp(  # pylint: disable=too-many-locals
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
@@ -924,7 +935,8 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         ** Write new parameters to file
         * If Ctrl-C is called, finish current epoch and return
 
-    Return loss statistics and auxiliary data size (n_epoch, n_batch); Learned Model/Trajectory are mutated.
+    Return loss statistics and auxiliary data size (n_epoch, n_batch);
+        Learned Model/Trajectory are mutated.
     """
 
     # Configure loss, params, and optimizer

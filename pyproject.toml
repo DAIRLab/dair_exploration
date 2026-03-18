@@ -26,6 +26,7 @@ dependencies = [
   "gitpython", # file_util to identify repository (EXAMPLES ONLY)
   "meshcat", # Visualization
   "lcm", # Communicating with robot/simulator
+  "mpax", # Default Solver
 ]
 
 [project.optional-dependencies]
