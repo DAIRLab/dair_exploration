@@ -8,10 +8,31 @@ The main contents of this file are as follows:
     * (Optional) jaxopt solver
     * (Optional) Moreau solver (via cvxpylayers)
 """
+from functools import partial
+from typing import Optional
+
 import gin
 import jax
 import jax.numpy as jnp
 from mpax import create_qp, raPDHG
+
+
+## Custom Matrix sqrt
+## See: https://github.com/jax-ml/jax/discussions/30120
+def db_iter_sqrt(I, X, *args):  # pylint: disable=unused-argument, invalid-name
+    """Denman-Beavers iteration"""
+    X1i = jnp.linalg.inv(X[1])  # pylint: disable=invalid-name
+    return ((0.5 * X[0] @ (I + X1i), 0.5 * (I + 0.5 * (X[1] + X1i))), None)
+
+
+def sqrtm(A, s=10):
+    """Sqrt of PD matrix, NOTE: not ideal for near-singular matricies"""
+    return jax.lax.scan(partial(db_iter_sqrt, jnp.eye(A.shape[0])), (A, A), length=s)[
+        0
+    ][0]
+
+
+sqrtm_jit = jax.jit(sqrtm)
 
 
 def static_vars(**kwargs):
@@ -58,6 +79,32 @@ except ImportError:
         )
 
 
+try:
+    import cvxpy as cp  # type: ignore
+    from cvxpylayers.jax import CvxpyLayer  # type: ignore
+
+    gin.register(CvxpyLayer, module="cvxpylayers")
+
+    @static_vars(layer=None, implemented=True)
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_moreau(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+        """vmap-ed Moreau solver with >0 constraints"""
+        return jit_vmap_solver_moreau.layer(sqrtm_jit(qp_solve), q_solve)[0]
+
+except ImportError:
+
+    @static_vars(layer=None, implemented=False)
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_moreau(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
+        """vmap-ed Moreau solver with >0 constraints"""
+        raise NotImplementedError(
+            "Moreau or cvxpylayers is not installed."
+            "Install with `pip install moreau[cuda13] cvxpylayers`"
+        )
+
+
 @static_vars(solve=None)
 @jax.jit
 @jax.vmap
@@ -82,11 +129,28 @@ gin.register(raPDHG, module="mpax")
 
 
 @static_vars(first_execute=True)
-def configure_solvers() -> None:
+def configure_solvers(nvar: Optional[int] = None) -> None:
     """Ensures all solvers are gin-configured"""
 
     if configure_solvers.first_execute:
-        jit_vmap_solver_mpax.solve = jax.jit(raPDHG().optimize)
+        jit_vmap_solver_mpax.solve = jax.jit(raPDHG(iteration_limit=100).optimize)
 
         if jit_vmap_solver_jaxopt.implemented:
             jit_vmap_solver_jaxopt.solve = jax.jit(BoxOSQP().run)
+
+        if jit_vmap_solver_moreau.implemented and nvar is not None:
+            variables = cp.Variable(nvar)
+            objective_matrix = cp.Parameter((nvar, nvar))
+            objective_vector = cp.Parameter(nvar)
+            objective = cp.Minimize(
+                0.5 * cp.sum_squares(objective_matrix @ variables)
+                + objective_vector.T @ variables
+            )
+            constraints = [variables >= 0]
+            problem = cp.Problem(objective, constraints)
+            jit_vmap_solver_moreau.layer = CvxpyLayer(
+                problem,
+                parameters=[objective_matrix, objective_vector],
+                variables=[variables],
+                solver="MOREAU",
+            )

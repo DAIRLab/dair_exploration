@@ -44,6 +44,7 @@ LearningHyperparameters.w_pen = 1e0
 LearningHyperparameters.reg_grounded = 1e2
 LearningHyperparameters.ground_geom = "ground-geom"
 LearningHyperparameters.epsilon = 1e-4
+LearningHyperparameters.solver = %QPSolver.MPAX
 
 LearningHyperparameters.w_pen = 1e2
 LearningHyperparameters.w_v_pred = 1e2

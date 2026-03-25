@@ -11,7 +11,6 @@ import time
 import gin
 import jax.numpy as jnp
 from mujoco import mjx
-import mpax
 import numpy as np
 import optax
 from scipy.spatial.transform import Rotation
@@ -32,6 +31,7 @@ from dair_exploration.action_utils import (
 )
 from dair_exploration.data_util import TrajectorySet
 from dair_exploration.learning import LearnedTrajectory, LearnedModel, train_epochs
+from dair_exploration.solvers import configure_solvers
 
 
 ## Main Function
@@ -82,6 +82,7 @@ def main(
     # pylint: disable-next=no-value-for-parameter
     learned_model = LearnedModel()
     learned_model.write_to_file("init")
+    configure_solvers(nvar=len(mjx.make_data(learned_model.base_model).efc_J))
     # Pylint doesn't know about gin
     # pylint: disable-next=no-value-for-parameter
     learned_traj = LearnedTrajectory(base_model=learned_model.active_model)

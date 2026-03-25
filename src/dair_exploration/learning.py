@@ -381,6 +381,15 @@ class LossStyle(Enum):
     VIMP = 1
 
 
+@gin.constants_from_enum
+class QPSolver(Enum):
+    """Which QP Solver to use"""
+
+    MPAX = 0
+    JAXOPT = 1
+    MOREAU = 2
+
+
 @gin.configurable
 @dataclass(frozen=True)
 class LearningHyperparameters:  # pylint: disable=too-many-instance-attributes
@@ -408,6 +417,7 @@ class LearningHyperparameters:  # pylint: disable=too-many-instance-attributes
 
     # Computation Parameters
     epsilon: float = 1e-8
+    solver: QPSolver = QPSolver.MPAX
 
 
 def _get_measurement_loss_and_outputs(
@@ -679,8 +689,12 @@ def loss_vimp(  # pylint: disable=too-many-locals
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    impulses_raw = solvers.jit_vmap_solver_mpax(qp_final, q_final)
-    # impulses_raw = solvers.jit_vmap_solver_jaxopt(qp_final, q_final)
+    if hyperparams.solver == QPSolver.JAXOPT:
+        impulses_raw = solvers.jit_vmap_solver_jaxopt(qp_final, q_final)
+    elif hyperparams.solver == QPSolver.MOREAU:
+        impulses_raw = solvers.jit_vmap_solver_moreau(qp_final, q_final)
+    else:  # hyperparams.solver == QPSolver.MPAX
+        impulses_raw = solvers.jit_vmap_solver_mpax(qp_final, q_final)
     impulses = jax.lax.stop_gradient(
         jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))
     )  # (n_t-1, n_l)
