@@ -153,4 +153,15 @@ def configure_solvers(nvar: Optional[int] = None) -> None:
                 parameters=[objective_matrix, objective_vector],
                 variables=[variables],
                 solver="MOREAU",
+                solver_args={
+                    "device": "cuda",
+                    "ipm_settings": {
+                        "tol_gap_abs": 1e-4,
+                        "tol_gap_rel": 1e-4,
+                        "tol_feas": 1e-6,
+                        "tol_infeas_abs": 1e-6,
+                        "tol_infeas_rel": 1e-6,
+                        "tol_ktratio": 1e-4,
+                    },
+                },
             )

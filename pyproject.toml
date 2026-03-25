@@ -20,7 +20,7 @@ license-files = ["LICEN[CS]E*"]
 dependencies = [
   "jax[cuda13] >= 0.9.1",
   "optax",
-  "mujoco-mjx",
+  "mujoco-mjx @ git+https://github.com/aarushk09/mujoco.git@mjx-differentiable-distance#egg=mujoco-mjx&subdirectory=mjx",
   "gin-config", # Gin Configuration
   "warp-lang", # GPU Acceleration for Mujoco
   "gitpython", # file_util to identify repository (EXAMPLES ONLY)
@@ -28,6 +28,10 @@ dependencies = [
   "lcm", # Communicating with robot/simulator
   "mpax", # Default Solver
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
 
 [project.optional-dependencies]
 dev = [
