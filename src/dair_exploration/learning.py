@@ -22,9 +22,8 @@ import mujoco
 from mujoco import mjx
 import numpy as np
 import optax
-from mpax import create_qp, raPDHG
 
-from dair_exploration import file_util, mjx_util, data_util
+from dair_exploration import file_util, mjx_util, data_util, solvers
 from dair_exploration.gui_util import MJXMeshcatVisualizer
 
 
@@ -516,63 +515,6 @@ def _get_measurement_loss_and_outputs(
     return loss, {"phis": phis, "normals": normals, "dist_pen": dist_pen}
 
 
-try:
-    from jaxopt import BoxOSQP  # type: ignore
-
-    jaxopt_jit = jax.jit(BoxOSQP(implicit_diff=False, maxiter=100, tol=1e-4).run)
-
-    @jax.jit
-    @jax.vmap
-    def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
-        """vmap-ed OSQP solver with >0 constraints"""
-        return jaxopt_jit(
-            params_obj=(qp_solve, q_solve),
-            params_eq=jnp.eye(qp_solve.shape[-1]),
-            params_ineq=(jnp.zeros_like(q_solve), jnp.full(q_solve.shape, jnp.inf)),
-        ).params.primal[
-            0
-        ]  # (x, z), where Ax = z (but A == I so x == z)
-
-except ImportError:
-
-    @jax.jit
-    @jax.vmap
-    def jit_vmap_solver_jaxopt(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
-        """vmap-ed OSQP solver with >0 constraints"""
-        raise NotImplementedError(
-            "Jaxopt is not installed. Install with `pip install jaxopt`"
-        )
-
-
-# TODO: Make gin-config arguments
-mpax_optimize_jit = jax.jit(
-    raPDHG(
-        eps_abs=1e-4,
-        eps_rel=1e-4,
-        iteration_limit=100,
-        verbose=False,
-    ).optimize
-)
-
-
-@jax.jit
-@jax.vmap
-def jit_vmap_solver_mpax(qp_solve: jax.Array, q_solve: jax.Array) -> jax.Array:
-    """vmap-ed mpax solver with >0 constraints"""
-    return mpax_optimize_jit(
-        create_qp(
-            Q=qp_solve,
-            c=q_solve.T,
-            A=jnp.zeros((0, q_solve.shape[-1])),
-            b=jnp.zeros(0),
-            G=jnp.eye(q_solve.shape[-1]),
-            h=jnp.zeros(q_solve.shape[-1]),
-            l=jnp.zeros(q_solve.shape[-1]),
-            u=jnp.full((q_solve.shape[-1],), jnp.inf),
-        ),
-    ).primal_solution
-
-
 def loss_vimp(  # pylint: disable=too-many-locals
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
@@ -737,8 +679,8 @@ def loss_vimp(  # pylint: disable=too-many-locals
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    impulses_raw = jit_vmap_solver_mpax(qp_final, q_final)
-    # impulses_raw = jit_vmap_solver_jaxopt(qp_final, q_final)
+    impulses_raw = solvers.jit_vmap_solver_mpax(qp_final, q_final)
+    # impulses_raw = solvers.jit_vmap_solver_jaxopt(qp_final, q_final)
     impulses = jax.lax.stop_gradient(
         jnp.nan_to_num(jnp.clip(impulses_raw, a_min=0.0))
     )  # (n_t-1, n_l)

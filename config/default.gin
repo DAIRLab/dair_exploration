@@ -52,6 +52,17 @@ LearningHyperparameters.w_comp = 1e1
 LearningHyperparameters.w_diss = 3e2
 LearningHyperparameters.w_elas = 1e0
 
+# Solver Config (mpax)
+mpax.raPDHG.eps_abs=1e-4
+mpax.raPDHG.eps_rel=1e-4
+mpax.raPDHG.iteration_limit=100
+mpax.raPDHG.verbose=False
+
+# Solver Config (jaxopt)
+# jaxopt.BoxOSQP.implicit_diff=False
+# jaxopt.BoxOSQP.maxiter=100
+# jaxopt.BoxOSQP.tol=1e-4
+
 ## Trifinger Utils Config
 TrifingerLCMService.fingertip_geom_names = %fingertip_geom_names
 TrifingerLCMService.object_geom_name = %true_geom_name
