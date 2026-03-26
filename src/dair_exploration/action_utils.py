@@ -339,7 +339,7 @@ def interpolate_knots(
 def action_to_knots(
     params: ActionWorkspaceParams,
     actions: list[Action],
-    object_pose_estimate: np.ndarray,
+    object_pose_estimate: Optional[np.ndarray] = None,
     include_finger_240: bool = True,
     force_finger: Optional[int] = None,
 ):
@@ -357,8 +357,11 @@ def action_to_knots(
     # Input Validation
     assert params is not None
     assert len(actions) > 0
-    assert object_pose_estimate.shape == (7,)
-    object_position = object_pose_estimate[4:]
+    if object_pose_estimate is None:
+        object_position = np.zeros(3)
+    else:
+        assert object_pose_estimate.shape == (7,)
+        object_position = object_pose_estimate[4:]
 
     # Velocity == 0
     ret2 = np.zeros((len(actions), 2, 12))

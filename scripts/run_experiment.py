@@ -5,6 +5,7 @@ Entry Point for Exploration Experiment
 
 import argparse
 import pdb
+import pickle
 import signal
 import time
 
@@ -39,6 +40,7 @@ from dair_exploration.solvers import configure_solvers
 def main(
     config_file: str,
     model_file: str,
+    start_with_true_object_pose: bool = True,
 ) -> None:
     """Main function for online learning loop"""
 
@@ -94,7 +96,9 @@ def main(
     selected_knots = np.stack(
         [action_params.get_reset_knot(), action_params.get_reset_knot()]
     )
-    start_true_object_pose = trifinger_lcm.get_current_object_pose()
+    start_true_object_pose = (
+        trifinger_lcm.get_current_object_pose() if start_with_true_object_pose else None
+    )
     first_knots = action_to_knots(
         action_params,
         [selected_action],
@@ -121,14 +125,20 @@ def main(
                 learned_model.active_model, mjx.make_data(learned_model.active_model)
             )
         ],
-        {
-            trifinger_lcm.object_geom_name: [
-                (
-                    start_true_object_pose[4:],
-                    Rotation.from_quat(start_true_object_pose[:4], scalar_first=True),
-                )
-            ]
-        },
+        (
+            {
+                trifinger_lcm.object_geom_name: [
+                    (
+                        start_true_object_pose[4:],
+                        Rotation.from_quat(
+                            start_true_object_pose[:4], scalar_first=True
+                        ),
+                    )
+                ]
+            }
+            if start_true_object_pose is not None
+            else None
+        ),
     )
     gui_vis.draw_action_samples(selected_knots[np.newaxis, :, :])
 
@@ -140,6 +150,7 @@ def main(
         print(
             "\nUsage:\n"
             "e - Execute selected action + collect data\n"
+            "l - Load trajectory data\n"
             "t - Train on collected data\n"
             "b - breakpoint()\n"
             "h - Print Help\n"
@@ -170,46 +181,62 @@ def main(
             # ipdb.set_trace()
             ## END Debug Breakpoint
 
-        elif command_char == "e":
-            ## Collect New Data
-            new_trajectory = None
-            while new_trajectory is None:
-                trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
-                time.sleep(0.1)
+        elif command_char == "e" or command_char == "l":
+            if command_char == "e":
+                ## Collect New Data
+                new_trajectory = None
+                while new_trajectory is None:
+                    trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
+                    time.sleep(0.1)
 
-                # Execute and collect data
-                new_trajectory = trifinger_lcm.execute_trajectory(selected_knots[1])
+                    # Execute and collect data
+                    new_trajectory = trifinger_lcm.execute_trajectory(selected_knots[1])
 
-                # Move back to start state
-                trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
+                    # Move back to start state
+                    trifinger_lcm.execute_trajectory(selected_knots[0], no_data=True)
 
-                if new_trajectory is None:
-                    input("None trajectory, check densetacts. Enter to retry...")
+                    if new_trajectory is None:
+                        input("None trajectory, check densetacts. Enter to retry...")
 
-            # Write ctrl to new trajectory
-            ctrl_total = interpolate_knots(
-                jnp.array(selected_knots), new_trajectory["time"]
-            )
-            n_q = ctrl_total.shape[-1] // 2
-            ctrlqs = []
-            ctrlvs = []
-            for geom_idx, geom_name in enumerate(trifinger_lcm.fingertip_geom_names):
-                ctrlqs.append(ctrl_total[:, geom_idx * 3 : (geom_idx + 1) * 3])
-                ctrlvs.append(
-                    ctrl_total[:, (n_q + geom_idx * 3) : (n_q + (geom_idx + 1) * 3)]
+                # Write ctrl to new trajectory
+                ctrl_total = interpolate_knots(
+                    jnp.array(selected_knots), new_trajectory["time"]
                 )
-                new_trajectory[geom_name]["ctrl"] = np.concatenate(
-                    [ctrlqs[-1], ctrlvs[-1]],
-                    axis=-1,
-                )
-            # TODO: assumes trifinger order == mjcf actuator order!
-            new_trajectory["ctrl"] = jnp.concatenate(ctrlqs + ctrlvs, axis=-1)
+                n_q = ctrl_total.shape[-1] // 2
+                ctrlqs = []
+                ctrlvs = []
+                for geom_idx, geom_name in enumerate(
+                    trifinger_lcm.fingertip_geom_names
+                ):
+                    ctrlqs.append(ctrl_total[:, geom_idx * 3 : (geom_idx + 1) * 3])
+                    ctrlvs.append(
+                        ctrl_total[:, (n_q + geom_idx * 3) : (n_q + (geom_idx + 1) * 3)]
+                    )
+                    new_trajectory[geom_name]["ctrl"] = np.concatenate(
+                        [ctrlqs[-1], ctrlvs[-1]],
+                        axis=-1,
+                    )
+                # TODO: assumes trifinger order == mjcf actuator order!
+                new_trajectory["ctrl"] = jnp.concatenate(ctrlqs + ctrlvs, axis=-1)
 
-            # Write data to TrajectorySet
-            dataset.add_trajectory(new_trajectory)
+                # Write data to TrajectorySet
+                dataset.add_trajectory(new_trajectory)
 
-            # Expand LearnedTrajectory
-            learned_traj.extend_traj(len(new_trajectory["time"]))
+                # Expand LearnedTrajectorynew_tratrajjectory
+                learned_traj.extend_traj(len(new_trajectory["time"]))
+
+            elif command_char == "l":
+                try:
+                    load_file = str(input("Path to trajectory data? "))
+                    # TODO: Move to file_utils
+                    with open(load_file, "rb") as file:
+                        new_trajs = pickle.load(file)
+                    for traj in new_trajs:
+                        dataset.add_trajectory(traj)
+                        learned_traj.extend_traj(len(traj["time"]))
+                except Exception as exc:
+                    print(f"Error loading data: {exc}")
+                    continue
 
             # Visualize Complete Data
             gui_vis.update_visuals(
