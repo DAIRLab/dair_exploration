@@ -4,6 +4,10 @@
 Exploration w/ EIG Functions
 """
 
+from dataclasses import dataclass
+from enum import Enum
+
+import gin
 import jax
 import jax.numpy as jnp
 from mujoco import mjx
@@ -11,6 +15,52 @@ import numpy as np
 
 from dair_exploration import mjx_util
 from dair_exploration.learning import LearnedModel
+
+
+@gin.constants_from_enum
+class InfoStyle(Enum):
+    """Which style of info calculation to use"""
+
+    IDENTITY = 0  # treat dx[t]/dx[t+1] = identity
+    DIFFSIM = 1  # use diffsim, get info w.r.t. first timestep
+    SAMPLING = 2  # use sampling, get info w.r.t. last timestep
+
+
+@gin.configurable
+@dataclass(frozen=True)
+class InfoHyperparameters:  # pylint: disable=too-many-instance-attributes
+    """Class to specify info hyperparameters"""
+
+    # Loss Weights
+    phi_nominal: float = 0.002  # m, distance where p(contact_measured) drops below CI
+    phi_ci: float = 0.05  # Confidence Interval (0,1) for above
+    normal_var: float = (
+        0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
+    )
+
+    # Computation Parameters
+    epsilon: float = 1e-8
+    style: InfoStyle = InfoStyle.IDENTITY
+
+
+def observed_info(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    base_model: mjx.Model,
+    hyperparams: InfoHyperparameters,
+) -> jax.Array:
+    """Calculate observed info
+
+    Args:
+        ctrl: (traj_len, n_control)
+        params: geometry params
+        measurements: contact and robot proprioception and control data,
+                        as a full trajectory (not a list of trajectories)
+        base_model: model from initial mcjf/urdf
+    Returns:
+        n_params x n_params expected info
+    """
+    pass
 
 
 ## Function to compute outputs from parameters
