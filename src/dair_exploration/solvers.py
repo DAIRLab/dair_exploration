@@ -105,6 +105,75 @@ except ImportError:
         )
 
 
+try:
+    import moreau
+    import numpy as np
+
+    class _MoreauDirectBoxQPSolver:
+        """Direct moreau active-set solver for box QPs. No cvxpylayers."""
+
+        def __init__(self, nvar: int):
+            self.nvar = nvar
+            self._solvers = {}
+
+            self._P_ro = np.arange(nvar + 1, dtype=np.int64) * nvar
+            self._P_ci = np.tile(np.arange(nvar, dtype=np.int64), nvar)
+            self._A_ro = np.arange(nvar + 1, dtype=np.int64)
+            self._A_ci = np.arange(nvar, dtype=np.int64)
+            self._cones = moreau.Cones(num_nonneg_cones=nvar)
+
+        def _get_solver(self, batch_size):
+            if batch_size not in self._solvers:
+                settings = moreau.Settings(
+                    solver="active_set",
+                    device="cpu",
+                    batch_size=batch_size,
+                )
+                self._solvers[batch_size] = moreau.CompiledSolver(
+                    n=self.nvar, m=self.nvar,
+                    P_row_offsets=self._P_ro, P_col_indices=self._P_ci,
+                    A_row_offsets=self._A_ro, A_col_indices=self._A_ci,
+                    cones=self._cones, settings=settings,
+                )
+            return self._solvers[batch_size]
+
+        def solve(self, P_batch, q_batch):
+            P_np = np.asarray(P_batch, dtype=np.float64)
+            q_np = np.asarray(q_batch, dtype=np.float64)
+            batch_size = P_np.shape[0]
+            nvar = self.nvar
+            solver = self._get_solver(batch_size)
+
+            P_flat = np.ascontiguousarray(P_np.reshape(batch_size, -1))
+            A_vals = np.broadcast_to(-np.ones(nvar), (batch_size, nvar)).copy()
+            bs = np.zeros((batch_size, nvar), dtype=np.float64)
+
+            solver.setup(P_flat, A_vals)
+            return np.asarray(solver.solve(q_np, bs).x, dtype=np.float64)
+
+    @static_vars(box_solver=None, implemented=True)
+    def jit_vmap_solver_moreau_direct(
+        qp_solve: jax.Array, q_solve: jax.Array
+    ) -> jax.Array:
+        """Direct moreau active-set solver (no cvxpylayers)."""
+        P = jax.lax.stop_gradient(qp_solve)
+        q = jax.lax.stop_gradient(q_solve)
+        return jax.pure_callback(
+            jit_vmap_solver_moreau_direct.box_solver.solve,
+            jax.ShapeDtypeStruct(q.shape, jnp.float64),
+            P, q,
+        )
+
+except ImportError:
+
+    @static_vars(box_solver=None, implemented=False)
+    def jit_vmap_solver_moreau_direct(
+        qp_solve: jax.Array, q_solve: jax.Array
+    ) -> jax.Array:
+        """Direct moreau active-set solver (not installed)."""
+        raise NotImplementedError("moreau is not installed.")
+
+
 @static_vars(solve=None)
 @jax.jit
 @jax.vmap
@@ -137,6 +206,9 @@ def configure_solvers(nvar: Optional[int] = None) -> None:
 
         if jit_vmap_solver_jaxopt.implemented:
             jit_vmap_solver_jaxopt.solve = jax.jit(BoxOSQP().run)
+
+        if jit_vmap_solver_moreau_direct.implemented and nvar is not None:
+            jit_vmap_solver_moreau_direct.box_solver = _MoreauDirectBoxQPSolver(nvar)
 
         if jit_vmap_solver_moreau.implemented and nvar is not None:
             variables = cp.Variable(nvar)
