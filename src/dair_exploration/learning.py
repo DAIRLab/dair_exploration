@@ -256,6 +256,14 @@ class LearnedTrajectory(Sequence):
             )
 
     @property
+    def final_q(self) -> dict[str, jax.Array]:
+        """Final position"""
+        return {
+            geom_name: geom_traj[TrajParamKey.Q0][-1].squeeze()
+            for geom_name, geom_traj in self._params.items()
+        }
+
+    @property
     def init_q(self) -> dict[str, jax.Array]:
         """Initial position"""
         return {

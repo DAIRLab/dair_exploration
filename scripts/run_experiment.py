@@ -32,6 +32,11 @@ from dair_exploration.action_utils import (
 )
 from dair_exploration.data_util import TrajectorySet
 from dair_exploration.learning import LearnedTrajectory, LearnedModel, train_epochs
+from dair_exploration.exploration import (
+    observed_info,
+    InfoHyperparameters,
+    expected_info,
+)
 from dair_exploration.solvers import configure_solvers
 
 
@@ -149,6 +154,7 @@ def main(
     def print_help():
         print(
             "\nUsage:\n"
+            "a - [WIP] Action selection\n"
             "e - Execute selected action + collect data\n"
             "l - Load trajectory data\n"
             "t - Train on collected data\n"
@@ -180,6 +186,27 @@ def main(
             pdb.Pdb(nosigint=True).set_trace()
             # ipdb.set_trace()
             ## END Debug Breakpoint
+
+        elif command_char == "a":
+            # test_obs = observed_info(
+            #     (learned_model.params, learned_traj.get_full_trajectory()),
+            #     dataset.full_trajectory(),
+            #     learned_model.base_model,
+            #     InfoHyperparameters(),
+            # )
+            test_exp = expected_info(
+                dataset.full_trajectory()["ctrl"],
+                (learned_model.params, learned_traj.final_q),
+                [
+                    geom_name
+                    for geom_name in dataset.full_trajectory().keys()
+                    if isinstance(dataset.full_trajectory()[geom_name], dict)
+                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+                ],
+                learned_model.base_model,
+                InfoHyperparameters(),
+            )
+            breakpoint()
 
         elif command_char == "e" or command_char == "l":
             if command_char == "e":
