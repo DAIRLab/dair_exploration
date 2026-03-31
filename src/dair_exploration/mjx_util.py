@@ -144,6 +144,8 @@ def write_qpos_to_data(
     """Write a qpos parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qpos.items():
+        if "position" not in val:
+            continue
         ret_data = ret_data.replace(
             qpos=ret_data.qpos.at[qposidx_from_geom_name(base_model, key)].set(val)
         )
@@ -156,10 +158,62 @@ def write_qvel_to_data(
     """Write a qvel parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qvel.items():
+        if "velocity" not in val:
+            continue
         ret_data = ret_data.replace(
             qvel=ret_data.qvel.at[qvelidx_from_geom_name(base_model, key)].set(val)
         )
     return ret_data
+
+
+def write_qpos_qvel_to_data(
+    base_model: mjx.Model,
+    base_data: mjx.Data,
+    traj_qpos_qvel: dict[str, dict[str, jax.Array]],
+) -> mjx.Data:
+    """Write qvel and qpos parameters to MJX data object in a jax-traceable way"""
+    ret_data = base_data
+    for key, val in traj_qpos_qvel.items():
+        if not isinstance(val, dict):
+            continue
+        if "position" not in val:
+            continue
+        if "velocity" not in val:
+            continue
+        ret_data = ret_data.replace(
+            qpos=ret_data.qpos.at[qposidx_from_geom_name(base_model, key)].set(
+                val["position"]
+            ),
+            qvel=ret_data.qvel.at[qvelidx_from_geom_name(base_model, key)].set(
+                val["velocity"]
+            ),
+        )
+    return ret_data
+
+
+def extract_geom_qposvel_from_data(
+    base_model: mjx.Model,
+    data: mjx.Data,
+    geoms: frozenset,
+) -> dict[str, dict[str, jax.Array]]:
+    """Inverse of write_qpos_qvel_to_data"""
+    ret = {
+        geom_name: {
+            "position": None,
+            "velocity": None,
+        }
+        for geom_name in geoms
+    }
+
+    for geom_name in geoms:
+        ret[geom_name]["position"] = data.qpos[
+            ..., qposidx_from_geom_name(base_model, geom_name)
+        ]
+        ret[geom_name]["velocity"] = data.qvel[
+            ..., qvelidx_from_geom_name(base_model, geom_name)
+        ]
+
+    return ret
 
 
 ## Compiled base functions

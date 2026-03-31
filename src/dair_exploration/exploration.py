@@ -53,27 +53,11 @@ def get_outputs_from_measurements(
     """Compute outputs (phi and normals) from data"""
     # write pose and params to model/data
     param_model = LearnedModel.write_params_to_model(params[0], base_model)
-    pose_traj = {
-        geom_name: measurements[geom_name]["position"]
-        for geom_name in measurements.keys()
-        if isinstance(measurements[geom_name], dict)
-        and "position" in measurements[geom_name]
-    } | {geom_name: params[1][geom_name]["position"] for geom_name in params[1].keys()}
-    vel_traj = {
-        geom_name: measurements[geom_name]["velocity"]
-        for geom_name in measurements.keys()
-        if isinstance(measurements[geom_name], dict)
-        and "velocity" in measurements[geom_name]
-    } | {geom_name: params[1][geom_name]["velocity"] for geom_name in params[1].keys()}
     # Forward will compute all physical parameters and distances
     forward_data = mjx_util.jit_forward(
         param_model,
-        mjx_util.write_qvel_to_data(
-            param_model,
-            mjx_util.write_qpos_to_data(
-                param_model, mjx.make_data(param_model), pose_traj
-            ),
-            vel_traj,
+        mjx_util.write_qpos_qvel_to_data(
+            param_model, mjx.make_data(param_model), measurements | params[1]
         ),
     )
 
@@ -134,7 +118,7 @@ def observed_info(
     Args:
         ctrl: (traj_len, n_control)
         params: geometry params
-        measurements: contact and robot proprioception and control data,
+        measurements: contact and robot proprioceptio/home/ethankg/Workspace/test/data/traj_01.pkln and control data,
                         as a full trajectory (not a list of trajectories)
         base_model: model from initial mcjf/urdf
     Returns:
@@ -344,6 +328,59 @@ def expected_info(
     )
 
     breakpoint()
+
+    # Clarify number of parameters
+    n_geom = jax.tree.reduce(operator.add, jax.tree.map(jnp.size, params[0]))
+    n_q = jax.tree.reduce(
+        operator.add,
+        jax.tree.map(
+            lambda leaf: leaf.shape[-1],
+            [params[1][name] for name in params[1].keys()],
+        ),
+    )
+    assert len(params[1].keys()) == 1
+    obj_geom_name = list(params[1].keys())[0]
+
+    ## Compute Phi Info
+    phis = jax.tree.reduce(
+        lambda leaf1, leaf2: jnp.concat([leaf1, leaf2], axis=0), outputs["phi"]
+    )  # (n_T*n_contacts, 1, 1)
+    phi_alpha = (
+        np.log(np.reciprocal(hyperparams.phi_ci) - 1.0) / hyperparams.phi_nominal
+    )
+    contact_bool = jax.nn.sigmoid(-phi_alpha * phis)  # simgoid = 1/(1+exp(-x))
+    phi_mult = contact_bool - jnp.square(
+        contact_bool
+    )  # exp(x)/(1+exp(x))^2 = sigmoid(-x) - sigmoid(-x)^2
+    # Handle w.r.t. geometry / physics params
+    phi_geom_jac = jnp.stack(
+        jax.tree.flatten(
+            [output_jacs["phi"][name][0] for name in output_jacs["phi"].keys()]
+        )[0],
+        axis=0,
+    ).reshape(
+        -1, 1, n_geom
+    )  # (n_T*n_contacts, 1, n_geom)
+    # Handle w.r.t. state, assume jac == identity, note that (... n_T, ..., n_T, :) is block-diagonal
+    breakpoint()
+    phi_pose_jac = jnp.sum(
+        jnp.stack(
+            jax.tree.flatten(
+                [
+                    jacs["phi"][name][1][obj_geom_name]["position"]
+                    for name in jacs["phi"].keys()
+                ]
+            )[0],
+            axis=0,
+        ),
+        axis=-2,
+    ).reshape(
+        -1, 1, n_q
+    )  # (n_T*n_contacts, 1, n_geom)
+    phi_param_jac = jnp.concat(
+        [phi_pose_jac, phi_geom_jac], axis=-1
+    )  # (n_T*n_contacts, 1, n_param = n_q + n_geom)
+    phi_info = jnp.swapaxes(phi_param_jac, -2, -1) @ phi_mult @ phi_param_jac
 
     ## Handle Phi
     phi_jacs = output_jacs["phi"]
