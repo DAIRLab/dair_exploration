@@ -56,15 +56,18 @@ class MJXMeshcatVisualizer:
     ):
         """Update local parameters used in update()"""
 
+        # Model Overwrite
+        self._model = model if model is not None else self._model
+
         ### input validation
         if data_trajectory is not None:
             assert len(data_trajectory) > 0
             for data in data_trajectory:
-                assert data.xpos.shape == (model.nbody, 3)
+                assert data.xpos.shape == (self._model.nbody, 3)
         if traj_overwrite is not None:
             for key, val in traj_overwrite.items():
                 assert (
-                    model.names.find(key.encode()) in model.name_geomadr
+                    self._model.names.find(key.encode()) in self._model.name_geomadr
                 ), f"{key} not in model"
                 assert (
                     len(val) == len(self._data)
@@ -76,7 +79,6 @@ class MJXMeshcatVisualizer:
                     # Rotation enforced by type check
 
         # Parameter Overwrite
-        self._model = model if model is not None else self._model
         self._data = data_trajectory if data_trajectory is not None else self._data
         self._trajs = traj_overwrite if traj_overwrite is not None else self._trajs
         self._scale.configure(to=float(len(self._data) - 1))

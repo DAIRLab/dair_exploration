@@ -501,9 +501,9 @@ def _get_measurement_loss_and_outputs(
     loss["meas_contact"] = jax.tree.map(
         lambda phi, contact_bool, phi_alpha=phi_alpha: (contact_bool - 1.0)
         * phi_alpha
-        * phi
+        * jnp.maximum(phi, jnp.zeros_like(phi))
         - jax.nn.log_sigmoid(
-            -(phi_alpha * phi)
+            -(phi_alpha * jnp.maximum(phi, jnp.zeros_like(phi)))
         ),  # -logsigmoid(-x) == log(1+exp(x)), more numerically stable
         phis,
         contact_bools,
@@ -936,6 +936,9 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
         else:
             learned_model.params, learned_traj[batch_idx] = params
 
+    best_loss = jnp.finfo(float).max
+    best_params = [get_learning_params(batch_idx) for batch_idx in range(n_batch)]
+
     optimizer = optimizer_cls()
     opt_state = optimizer.init(get_learning_params(0))
 
@@ -974,9 +977,23 @@ def train_epochs(  # pylint: disable=too-many-arguments,too-many-positional-argu
             operator.add, jax.tree.map(jnp.sum, [aux["loss"] for aux in aux_list])
         )
         print(f"({time.time()-start:6.4f}s): Loss ({loss_total:6.4f})")
+        if loss_total < best_loss:
+            print("NEW BEST LOSS")
+            best_params = [
+                get_learning_params(batch_idx) for batch_idx in range(n_batch)
+            ]
+            best_loss = loss_total
+
+        # Final Run, write best parameters
+        if epoch == epoch_start + n_epochs - 1:
+            print("Writing best parameters")
+            for batch_idx, param in enumerate(best_params):
+                set_learning_params(param, batch_idx)
 
         # Visualization / File updates
-        if vis_update > 0 and (epoch + 1) % vis_update == 0:
+        if (
+            vis_update > 0 and (epoch + 1) % vis_update == 0
+        ) or epoch == epoch_start + n_epochs - 1:
             print("\t Writing to File...")
             learned_model.write_to_file(f"{epoch:04d}")
             learned_traj.write_to_file(f"{epoch:04d}")

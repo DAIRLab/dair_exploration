@@ -5,6 +5,7 @@ Utilities for Mujoco XLA / JAX
 """
 
 from functools import partial
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -144,8 +145,6 @@ def write_qpos_to_data(
     """Write a qpos parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qpos.items():
-        if "position" not in val:
-            continue
         ret_data = ret_data.replace(
             qpos=ret_data.qpos.at[qposidx_from_geom_name(base_model, key)].set(val)
         )
@@ -158,8 +157,6 @@ def write_qvel_to_data(
     """Write a qvel parameter to MJX data object in a jax-traceable way"""
     ret_data = base_data
     for key, val in traj_qvel.items():
-        if "velocity" not in val:
-            continue
         ret_data = ret_data.replace(
             qvel=ret_data.qvel.at[qvelidx_from_geom_name(base_model, key)].set(val)
         )
@@ -194,7 +191,7 @@ def write_qpos_qvel_to_data(
 def extract_geom_qposvel_from_data(
     base_model: mjx.Model,
     data: mjx.Data,
-    geoms: frozenset,
+    geoms: Union[frozenset, tuple],
 ) -> dict[str, dict[str, jax.Array]]:
     """Inverse of write_qpos_qvel_to_data"""
     ret = {

@@ -194,18 +194,18 @@ def main(
                 learned_model.base_model,
                 InfoHyperparameters(),
             )
-            # test_exp = expected_info(
-            #     dataset.full_trajectory()["ctrl"],
-            #     (learned_model.params, learned_traj.final_q),
-            #     [
-            #         geom_name
-            #         for geom_name in dataset.full_trajectory().keys()
-            #         if isinstance(dataset.full_trajectory()[geom_name], dict)
-            #         and "contact_normal_W" in dataset.full_trajectory()[geom_name]
-            #     ],
-            #     learned_model.base_model,
-            #     InfoHyperparameters(),
-            # )
+            test_exp = expected_info(
+                dataset.full_trajectory()["ctrl"],
+                (learned_model.params, learned_traj.final_q),
+                tuple(
+                    geom_name
+                    for geom_name in dataset.full_trajectory().keys()
+                    if isinstance(dataset.full_trajectory()[geom_name], dict)
+                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+                ),
+                learned_model.base_model,
+                InfoHyperparameters(),
+            )
             breakpoint()
 
         elif command_char == "e" or command_char == "l":
@@ -261,7 +261,7 @@ def main(
                     for traj in new_trajs:
                         dataset.add_trajectory(traj)
                         learned_traj.extend_traj(len(traj["time"]))
-                except Exception as exc:
+                except Exception as exc:  # pylint: disable=broad-exception-caught
                     print(f"Error loading data: {exc}")
                     continue
 
