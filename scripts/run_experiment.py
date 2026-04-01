@@ -188,12 +188,12 @@ def main(
             ## END Debug Breakpoint
 
         elif command_char == "a":
-            test_obs = observed_info(
-                (learned_model.params, learned_traj.get_full_trajectory()),
-                dataset.full_trajectory(),
-                learned_model.base_model,
-                InfoHyperparameters(),
-            )
+            # test_obs = observed_info(
+            #     (learned_model.params, learned_traj.get_full_trajectory()),
+            #     dataset.full_trajectory(),
+            #     learned_model.base_model,
+            #     InfoHyperparameters(),
+            # )
             test_exp = expected_info(
                 dataset.full_trajectory()["ctrl"],
                 (learned_model.params, learned_traj.final_q),

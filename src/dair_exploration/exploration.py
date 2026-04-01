@@ -57,7 +57,7 @@ def get_outputs_from_measurements(
         params[0], base_model, needs_sim=False
     )
     # Forward will compute all physical parameters and distances
-    forward_data = mjx_util.jit_forward(
+    step_data = mjx_util.jit_step(
         param_model,
         mjx_util.write_qpos_qvel_to_data(
             param_model, mjx.make_data(param_model), measurements | params[1]
@@ -76,7 +76,7 @@ def get_outputs_from_measurements(
     }
     phis = {
         geom_name: jnp.sum(
-            forward_data.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
+            step_data.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
             axis=-1,
             keepdims=True,
         )
@@ -86,7 +86,7 @@ def get_outputs_from_measurements(
         geom_name: jnp.mean(
             jnp.sum(
                 contact_mask[jnp.newaxis, :, jnp.newaxis]
-                * forward_data.contact.frame[..., 0, :],
+                * step_data.contact.frame[..., 0, :],
                 axis=-2,
                 keepdims=True,
             ),
@@ -98,6 +98,9 @@ def get_outputs_from_measurements(
     return {
         "phi": phis,
         "normal": normals,
+        "traj": mjx_util.extract_geom_qposvel_from_data(
+            base_model, step_data, obj_geom_names
+        ),
     }
 
 
@@ -115,9 +118,9 @@ def _info_from_jacs(
     jacs: Any,
     hyperparams: InfoHyperparameters,
 ) -> jax.Array:
-    """Compute observed info from given outputs and output jacobians w.r.t. parameters"""
-
-    # TODO: add other styles
+    """Compute observed info from given outputs and output jacobians w.r.t. parameters
+    Identity-Style Only
+    """
     assert hyperparams.style == InfoStyle.IDENTITY
 
     assert len(jacs["phi"][list(jacs["phi"])[0]][0].keys()) == 1
@@ -235,24 +238,15 @@ def observed_info(
     return _info_from_jacs(outputs, jacs, hyperparams)
 
 
-def expected_info(
+def _expected_info_identity(
     ctrl: jax.Array,
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     robot_geom_names: tuple,
     base_model: mjx.Model,
     hyperparams: InfoHyperparameters,
 ) -> jax.Array:
-    """Calculate expected info
+    """Calculate expected info using the identity style"""
 
-    Args:
-        ctrl: (traj_len, n_control)
-        params: (geometry params, learned trajectory param *final q*)
-        base_model: model from initial mcjf/urdf
-        hyperparams
-    Returns:
-        n_params x n_params expected info
-    """
-    # TODO: add other styles
     assert hyperparams.style == InfoStyle.IDENTITY
 
     # Get current position of object and robot
@@ -290,3 +284,40 @@ def expected_info(
     )
 
     return _info_from_jacs(outputs, jacs, hyperparams)
+
+
+def _expected_info_diffsim(
+    ctrl: jax.Array,
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    robot_geom_names: tuple,
+    base_model: mjx.Model,
+    hyperparams: InfoHyperparameters,
+) -> jax.Array:
+    """Calculate expected info using the identity style"""
+    # TODO: Implement
+    assert hyperparams.style == InfoStyle.DIFFSIM
+
+
+def expected_info(
+    ctrl: jax.Array,
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    robot_geom_names: tuple,
+    base_model: mjx.Model,
+    hyperparams: InfoHyperparameters,
+) -> jax.Array:
+    """Calculate expected info
+
+    Args:
+        ctrl: (traj_len, n_control)
+        params: (geometry params, learned trajectory param *final q*)
+        base_model: model from initial mcjf/urdf
+        hyperparams
+    Returns:
+        n_params x n_params expected info
+    """
+    if hyperparams.style == InfoStyle.IDENTITY:
+        return _expected_info_identity(
+            ctrl, params, robot_geom_names, base_model, hyperparams
+        )
+    else:
+        raise NotImplementedError(f"Style {hyperparams.style} not implemented.")
