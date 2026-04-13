@@ -13,6 +13,8 @@ import jax.numpy as jnp
 from mujoco import mjx
 import numpy as np
 
+from dair_exploration.jax_util import overwrite_keep_gradient
+
 
 ## Naming Utilities
 # pylint: disable=missing-function-docstring
@@ -241,6 +243,7 @@ def diffsim_overwrite(
     ctrl: jax.Array,
     posvel_overwrite: dict[str, dict[str, jax.Array]],
     stacked: bool = False,
+    keep_grad: bool = False,
 ) -> list[mjx.Data]:
     """Simulate from init_data
 
@@ -248,6 +251,8 @@ def diffsim_overwrite(
         ctrl: (n_timesteps, n_ctrl)
         posvel_overwrite: geom_name ->
             {"position": (n_timesteps, n_q), "velocity": (n_timesteps, n_v)}
+        stacked: if True, leave final data stacked
+        keep_grad: if True, keep gradient through the overwrite step
 
     Returns:
         list of new data objects from simulation
@@ -263,6 +268,10 @@ def diffsim_overwrite(
             qvelidx = qvelidx_from_geom_name(model, geom_name)
             new_qpos = new_qpos.at[qposidx].set(posvel[geom_name]["position"])
             new_qvel = new_qvel.at[qvelidx].set(posvel[geom_name]["velocity"])
+
+        if keep_grad:
+            new_qpos = overwrite_keep_gradient(carry_data.qpos, new_qpos)
+            new_qvel = overwrite_keep_gradient(carry_data.qvel, new_qvel)
 
         ret_data = jit_step(
             model, carry_data.replace(ctrl=ctrl, qpos=new_qpos, qvel=new_qvel)
