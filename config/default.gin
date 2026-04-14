@@ -45,7 +45,7 @@ LearningHyperparameters.w_pen = 1e0
 LearningHyperparameters.reg_grounded = 1e2
 LearningHyperparameters.ground_geom = "ground-geom"
 LearningHyperparameters.epsilon = 1e-4
-LearningHyperparameters.solver = %QPSolver.MOREAU
+LearningHyperparameters.solver = %QPSolver.MOREAU_DIRECT
 
 LearningHyperparameters.w_pen = 1e2
 LearningHyperparameters.w_v_pred = 1e2
@@ -53,6 +53,11 @@ LearningHyperparameters.w_q_pred = 1e2
 LearningHyperparameters.w_comp = 1e1
 LearningHyperparameters.w_diss = 3e2
 LearningHyperparameters.w_elas = 1e0
+
+## Exploration Config
+
+# Hyperparameters
+InfoHyperparameters.style = %InfoStyle.DIFFSIM
 
 # Solver Config (mpax)
 # mpax.raPDHG.eps_abs=1e-4

@@ -171,12 +171,25 @@ def configure_solvers(nvar: Optional[int] = None) -> None:
 
         if jit_vmap_solver_moreau_direct.implemented and nvar is not None:
             jit_vmap_solver_moreau_direct.solver = _MoreauJaxSolver(
-                n=nvar, m=nvar,
+                n=nvar,
+                m=nvar,
                 P_row_offsets=np.arange(nvar + 1, dtype=np.int64) * nvar,
                 P_col_indices=np.tile(np.arange(nvar, dtype=np.int64), nvar),
                 A_row_offsets=np.arange(nvar + 1, dtype=np.int64),
                 A_col_indices=np.arange(nvar, dtype=np.int64),
                 cones=moreau.Cones(num_nonneg_cones=nvar),
+                settings=moreau.Settings(
+                    solver="active_set",
+                    device="cpu",
+                    ipm_settings=moreau.IPMSettings(
+                        tol_gap_abs=1e-4,
+                        tol_gap_rel=1e-4,
+                        tol_feas=1e-6,
+                        tol_infeas_abs=1e-6,
+                        tol_infeas_rel=1e-6,
+                        tol_ktratio=1e-4,
+                    ),
+                ),
             )
 
         if jit_vmap_solver_moreau.implemented and nvar is not None:

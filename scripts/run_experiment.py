@@ -89,7 +89,9 @@ def main(
     # pylint: disable-next=no-value-for-parameter
     learned_model = LearnedModel()
     learned_model.write_to_file("init")
-    configure_solvers(nvar=len(mjx.make_data(learned_model.base_model).efc_J))
+    # MJX insists on private acess for Jacobian
+    # pylint: disable-next=protected-access
+    configure_solvers(nvar=len(mjx.make_data(learned_model.base_model)._impl.efc_J))
     # Pylint doesn't know about gin
     # pylint: disable-next=no-value-for-parameter
     learned_traj = LearnedTrajectory(base_model=learned_model.active_model)
@@ -188,24 +190,24 @@ def main(
             ## END Debug Breakpoint
 
         elif command_char == "a":
-            # test_obs = observed_info(
-            #     (learned_model.params, learned_traj.get_full_trajectory()),
-            #     dataset.full_trajectory(),
-            #     learned_model.base_model,
-            #     InfoHyperparameters(),
-            # )
-            test_exp = expected_info(
-                dataset.full_trajectory()["ctrl"],
-                (learned_model.params, learned_traj.final_q),
-                tuple(
-                    geom_name
-                    for geom_name in dataset.full_trajectory().keys()
-                    if isinstance(dataset.full_trajectory()[geom_name], dict)
-                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
-                ),
+            test_obs, test_jac = observed_info(
+                (learned_model.params, learned_traj.get_full_trajectory()),
+                dataset.full_trajectory(),
                 learned_model.base_model,
                 InfoHyperparameters(),
             )
+            # test_exp = expected_info(
+            #     dataset.full_trajectory()["ctrl"],
+            #     (learned_model.params, learned_traj.final_q),
+            #     tuple(
+            #         geom_name
+            #         for geom_name in dataset.full_trajectory().keys()
+            #         if isinstance(dataset.full_trajectory()[geom_name], dict)
+            #         and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+            #     ),
+            #     learned_model.base_model,
+            #     InfoHyperparameters(),
+            # )
             breakpoint()
 
         elif command_char == "e" or command_char == "l":

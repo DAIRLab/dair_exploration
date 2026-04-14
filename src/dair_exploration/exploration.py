@@ -7,7 +7,7 @@ Exploration w/ EIG Functions
 from dataclasses import dataclass
 from enum import Enum
 import operator
-from typing import Any
+from typing import Any, Optional
 
 import gin
 import jax
@@ -45,19 +45,19 @@ class InfoHyperparameters:  # pylint: disable=too-many-instance-attributes
     style: InfoStyle = InfoStyle.IDENTITY
 
 
-## Function to compute outputs from measurements
+## Functions to compute outputs from measurements
 def get_outputs_from_measurements(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, dict[str, jax.Array]]],
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
 ) -> dict[str, jax.Array]:
-    """Compute outputs (phi and normals) from data"""
+    """Compute outputs (phi and normals) given measurements"""
     # write pose and params to model/data
     param_model = LearnedModel.write_params_to_model(
         params[0], base_model, needs_sim=False
     )
     # Forward will compute all physical parameters and distances
-    step_data = mjx_util.jit_step(
+    forward_data = mjx_util.jit_forward(
         param_model,
         mjx_util.write_qpos_qvel_to_data(
             param_model, mjx.make_data(param_model), measurements | params[1]
@@ -76,7 +76,7 @@ def get_outputs_from_measurements(
     }
     phis = {
         geom_name: jnp.sum(
-            step_data.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
+            forward_data.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
             axis=-1,
             keepdims=True,
         )
@@ -86,7 +86,7 @@ def get_outputs_from_measurements(
         geom_name: jnp.mean(
             jnp.sum(
                 contact_mask[jnp.newaxis, :, jnp.newaxis]
-                * step_data.contact.frame[..., 0, :],
+                * forward_data.contact.frame[..., 0, :],
                 axis=-2,
                 keepdims=True,
             ),
@@ -98,9 +98,6 @@ def get_outputs_from_measurements(
     return {
         "phi": phis,
         "normal": normals,
-        "traj": mjx_util.extract_geom_qposvel_from_data(
-            base_model, step_data, obj_geom_names
-        ),
     }
 
 
@@ -113,6 +110,92 @@ jac_get_outputs_from_measurements = jax.jit(
 )
 
 
+@jax.jit
+def get_outputs_from_sim(
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    measurements: dict[str, dict[str, jax.Array]],
+    base_model: mjx.Model,
+) -> dict[str, jax.Array]:
+    """Compute outputs (phi and normals) through diffsim
+
+    NOTE: assumes params[1] is only the starting position
+    NOTE: measurements should contain object params as well!
+    """
+    # write pose and params to model/data
+    param_model = LearnedModel.write_params_to_model(
+        params[0], base_model, needs_sim=True
+    )
+    first_meas = jax.tree.map(lambda leaf: leaf[0, ...], measurements)
+    start_data = mjx_util.write_qpos_to_data(
+        param_model,
+        mjx_util.write_qpos_qvel_to_data(
+            param_model, mjx.make_data(base_model), first_meas
+        ),
+        params[1],
+    )
+
+    # Sim Forward
+    step_data = mjx_util.diffsim_overwrite(
+        param_model,
+        start_data,
+        measurements["ctrl"],
+        measurements,
+        stacked=True,
+        keep_grad=True,
+    )
+
+    obj_geom_names = params[1].keys()
+    assert len(obj_geom_names) == 1  # Only 1 object supported
+    contact_masks = {
+        geom_name: mjx_util.contactids_from_collision_geoms(
+            param_model, [geom_name], obj_geom_names
+        )
+        for geom_name in measurements.keys()
+        if isinstance(measurements[geom_name], dict)
+        and "contact_normal_W" in measurements[geom_name]
+    }
+    phis = {
+        geom_name: jnp.sum(
+            step_data.contact.dist * jnp.abs(contact_mask[jnp.newaxis, :]),
+            axis=-1,
+            keepdims=True,
+        )[
+            ..., jnp.newaxis, :
+        ]  # Unsqueeze -2
+        for geom_name, contact_mask in contact_masks.items()
+    }
+    normals = {
+        geom_name: jnp.mean(
+            jnp.sum(
+                contact_mask[jnp.newaxis, :, jnp.newaxis]
+                * step_data.contact.frame[..., 0, :],
+                axis=-2,
+                keepdims=True,
+            ),
+            axis=-2,
+        )[
+            ..., jnp.newaxis, :
+        ]  # Unsqueeze -2
+        for geom_name, contact_mask in contact_masks.items()
+    }
+
+    geom_posvels = mjx_util.extract_geom_qposvel_from_data(
+        param_model, step_data, tuple(params[1].keys())
+    )
+    final_pose = {
+        geom_name: geom_posvels[geom_name]["position"][-1, ...]
+        for geom_name in geom_posvels
+    }
+
+    return {"phi": phis, "normal": normals, "final_pose": final_pose}
+
+
+# Diffsim needs forward-mode (and it is faster with long graphs)
+# see https://github.com/google-deepmind/mujoco/issues/2259
+jac_get_outputs_from_sim = jax.jit(jax.jacfwd(get_outputs_from_sim))
+
+
+## Functions to compute info from Jacobians
 def _info_from_jacs(
     outputs: Any,
     jacs: Any,
@@ -121,8 +204,6 @@ def _info_from_jacs(
     """Compute observed info from given outputs and output jacobians w.r.t. parameters
     Identity-Style Only
     """
-    assert hyperparams.style == InfoStyle.IDENTITY
-
     assert len(jacs["phi"][list(jacs["phi"])[0]][0].keys()) == 1
     obj_geom_name = list(jacs["phi"][list(jacs["phi"])[0]][0].keys())[0]
 
@@ -133,7 +214,12 @@ def _info_from_jacs(
             jacs["phi"][list(jacs["phi"])[0]][0][obj_geom_name],
         ),
     )
-    n_q = jacs["phi"][list(jacs["phi"])[0]][1][obj_geom_name]["position"].shape[-1]
+    if hyperparams.style == InfoStyle.IDENTITY:
+        n_q = jacs["phi"][list(jacs["phi"])[0]][1][obj_geom_name]["position"].shape[-1]
+    elif hyperparams.style == InfoStyle.DIFFSIM:
+        n_q = jacs["phi"][list(jacs["phi"])[0]][1][obj_geom_name].shape[-1]
+    else:
+        raise NotImplementedError(f"Style {hyperparams.style} not implemented.")
 
     ## Compute Phi Info
     phis = jax.tree.reduce(
@@ -153,40 +239,61 @@ def _info_from_jacs(
     ).reshape(
         -1, 1, n_geom
     )  # (n_T*n_contacts, 1, n_geom)
-    # Handle w.r.t. state, assume jac == identity, note that (... n_T, ..., n_T, :) is block-diagonal
-    phi_pose_jac = jnp.sum(
-        jnp.stack(
-            jax.tree.flatten(
-                [
-                    jacs["phi"][name][1][obj_geom_name]["position"]
-                    for name in jacs["phi"].keys()
-                ]
-            )[0],
-            axis=0,
-        ),
-        axis=-2,
-    ).reshape(
-        -1, 1, n_q
-    )  # (n_T*n_contacts, 1, n_geom)
+
+    # Handle w.r.t. state
+    if hyperparams.style == InfoStyle.IDENTITY:
+        # Assume jac == identity, note that (... n_T, ..., n_T, :) is block-diagonal
+        phi_pose_jac = jnp.sum(
+            jnp.stack(
+                jax.tree.flatten(
+                    [
+                        jacs["phi"][name][1][obj_geom_name]["position"]
+                        for name in jacs["phi"].keys()
+                    ]
+                )[0],
+                axis=0,
+            ),
+            axis=-2,
+        ).reshape(
+            -1, 1, n_q
+        )  # (n_T*n_contacts, 1, n_geom)
+    elif hyperparams.style == InfoStyle.DIFFSIM:
+        # Jac already w.r.t. start state
+        phi_pose_jac = jnp.stack(
+            [jacs["phi"][name][1][obj_geom_name] for name in jacs["phi"].keys()], axis=0
+        ).reshape(-1, 1, n_q)
+    else:
+        raise NotImplementedError(f"Style {hyperparams.style} not implemented.")
+
     phi_param_jac = jnp.concat(
         [phi_pose_jac, phi_geom_jac], axis=-1
     )  # (n_T*n_contacts, 1, n_param = n_q + n_geom)
     phi_info = jnp.swapaxes(phi_param_jac, -2, -1) @ phi_mult @ phi_param_jac
 
     ## Handle Normal
-    # Handle w.r.t. state, assume jac == identity, note phi_jacs[1] is block diagonal on timesteps
-    normal_pose_jac = jnp.sum(
-        jnp.stack(
-            jax.tree.flatten(
-                [
-                    jacs["normal"][name][1][obj_geom_name]["position"]
-                    for name in jacs["normal"].keys()
-                ]
-            )[0],
+    # Handle w.r.t. state
+    if hyperparams.style == InfoStyle.IDENTITY:
+        # Assume jac == identity, note that (... n_T, ..., n_T, :) is block-diagonal
+        normal_pose_jac = jnp.sum(
+            jnp.stack(
+                jax.tree.flatten(
+                    [
+                        jacs["normal"][name][1][obj_geom_name]["position"]
+                        for name in jacs["normal"].keys()
+                    ]
+                )[0],
+                axis=0,
+            ),
+            axis=-2,
+        ).reshape(-1, 3, n_q)
+    elif hyperparams.style == InfoStyle.DIFFSIM:
+        # Jac already w.r.t. start state
+        normal_pose_jac = jnp.stack(
+            [jacs["normal"][name][1][obj_geom_name] for name in jacs["normal"].keys()],
             axis=0,
-        ),
-        axis=-2,
-    ).reshape(-1, 3, n_q)
+        ).reshape(-1, 3, n_q)
+    else:
+        raise NotImplementedError(f"Style {hyperparams.style} not implemented.")
     # Handle w.r.t. geometry / physics params
     normal_geom_jac = jnp.stack(
         jax.tree.flatten([jacs["normal"][name][0] for name in jacs["normal"].keys()])[
@@ -212,11 +319,11 @@ def _info_from_jacs(
 
 
 def observed_info(
-    params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
+    params: tuple[dict[str, dict[str, jax.Array]], dict[str, dict[str, jax.Array]]],
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
     hyperparams: InfoHyperparameters,
-) -> jax.Array:
+) -> tuple[jax.Array, Optional[jax.Array]]:
     """Calculate observed info
 
     Args:
@@ -227,15 +334,42 @@ def observed_info(
         base_model: model from initial mcjf/urdf
     Returns:
         n_params x n_params observed info
+        Optional: the jacobian of the final pose w.r.t. the geometry and initial pose
     """
-    # TODO: add other styles
-    assert hyperparams.style == InfoStyle.IDENTITY
+    jac_final_pose = None
+    if hyperparams.style == InfoStyle.IDENTITY:
 
-    # Get phi/normal outputs and parameter jacobians
-    outputs = vmap_get_outputs_from_measurements(params, measurements, base_model)
-    jacs = jac_get_outputs_from_measurements(params, measurements, base_model)
+        # Get phi/normal outputs and parameter jacobians
+        outputs = vmap_get_outputs_from_measurements(params, measurements, base_model)
+        jacs = jac_get_outputs_from_measurements(params, measurements, base_model)
+    elif hyperparams.style == InfoStyle.DIFFSIM:
+        outputs = get_outputs_from_sim(
+            (
+                params[0],
+                {
+                    geom_name: params[1][geom_name]["position"][0, ...]
+                    for geom_name in params[1]
+                },
+            ),
+            measurements | params[1],
+            base_model,
+        )
+        jacs = jac_get_outputs_from_sim(
+            (
+                params[0],
+                {
+                    geom_name: params[1][geom_name]["position"][0, ...]
+                    for geom_name in params[1]
+                },
+            ),
+            measurements | params[1],
+            base_model,
+        )
+        jac_final_pose = jacs["final_pose"]
+    else:
+        raise NotImplementedError(f"Style {hyperparams.style} not implemented.")
 
-    return _info_from_jacs(outputs, jacs, hyperparams)
+    return _info_from_jacs(outputs, jacs, hyperparams), jac_final_pose
 
 
 def _expected_info_identity(

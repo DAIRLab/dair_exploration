@@ -236,7 +236,7 @@ def jit_vmap_kinematics(model: mjx.Model, data: mjx.Data):
 
 
 ## Diff Sim
-@partial(jax.jit, static_argnames="stacked")
+@partial(jax.jit, static_argnames=["stacked", "keep_grad"])
 def diffsim_overwrite(
     model: mjx.Model,
     init_data: mjx.Data,
@@ -264,6 +264,8 @@ def diffsim_overwrite(
         new_qpos = carry_data.qpos
         new_qvel = carry_data.qvel
         for geom_name in posvel.keys():
+            if not isinstance(posvel[geom_name], dict):
+                continue
             qposidx = qposidx_from_geom_name(model, geom_name)
             qvelidx = qvelidx_from_geom_name(model, geom_name)
             new_qpos = new_qpos.at[qposidx].set(posvel[geom_name]["position"])
