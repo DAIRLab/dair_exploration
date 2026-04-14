@@ -105,6 +105,37 @@ except ImportError:
         )
 
 
+try:
+    import moreau
+    from moreau.jax import Solver as _MoreauJaxSolver
+    import numpy as np
+
+    @static_vars(solver=None, implemented=True)
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_moreau_direct(
+        qp_solve: jax.Array, q_solve: jax.Array
+    ) -> jax.Array:
+        """Direct moreau active-set solver via moreau.jax.Solver."""
+        nvar = q_solve.shape[-1]
+        P_flat = qp_solve.reshape(-1)  # (nvar, nvar) -> (nvar*nvar,)
+        A_data = -jnp.ones(nvar)
+        b = jnp.zeros(nvar)
+        sol = jit_vmap_solver_moreau_direct.solver.solve(P_flat, A_data, q_solve, b)
+        return sol.x
+
+except ImportError:
+
+    @static_vars(solver=None, implemented=False)
+    @jax.jit
+    @jax.vmap
+    def jit_vmap_solver_moreau_direct(
+        qp_solve: jax.Array, q_solve: jax.Array
+    ) -> jax.Array:
+        """Direct moreau active-set solver (not installed)."""
+        raise NotImplementedError("moreau is not installed.")
+
+
 @static_vars(solve=None)
 @jax.jit
 @jax.vmap
@@ -137,6 +168,16 @@ def configure_solvers(nvar: Optional[int] = None) -> None:
 
         if jit_vmap_solver_jaxopt.implemented:
             jit_vmap_solver_jaxopt.solve = jax.jit(BoxOSQP().run)
+
+        if jit_vmap_solver_moreau_direct.implemented and nvar is not None:
+            jit_vmap_solver_moreau_direct.solver = _MoreauJaxSolver(
+                n=nvar, m=nvar,
+                P_row_offsets=np.arange(nvar + 1, dtype=np.int64) * nvar,
+                P_col_indices=np.tile(np.arange(nvar, dtype=np.int64), nvar),
+                A_row_offsets=np.arange(nvar + 1, dtype=np.int64),
+                A_col_indices=np.arange(nvar, dtype=np.int64),
+                cones=moreau.Cones(num_nonneg_cones=nvar),
+            )
 
         if jit_vmap_solver_moreau.implemented and nvar is not None:
             variables = cp.Variable(nvar)

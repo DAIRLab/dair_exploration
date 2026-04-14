@@ -396,6 +396,7 @@ class QPSolver(Enum):
     MPAX = 0
     JAXOPT = 1
     MOREAU = 2
+    MOREAU_DIRECT = 3  # Active-set solver, no cvxpylayers dependency
 
 
 @gin.configurable
@@ -697,7 +698,9 @@ def loss_vimp(  # pylint: disable=too-many-locals
         + hyperparams.w_diss * q_diss
         + hyperparams.w_elas * q_elas
     )
-    if hyperparams.solver == QPSolver.JAXOPT:
+    if hyperparams.solver == QPSolver.MOREAU_DIRECT:
+        impulses_raw = solvers.jit_vmap_solver_moreau_direct(qp_final, q_final)
+    elif hyperparams.solver == QPSolver.JAXOPT:
         impulses_raw = solvers.jit_vmap_solver_jaxopt(qp_final, q_final)
     elif hyperparams.solver == QPSolver.MOREAU:
         impulses_raw = solvers.jit_vmap_solver_moreau(qp_final, q_final)
