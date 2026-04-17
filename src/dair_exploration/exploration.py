@@ -365,7 +365,7 @@ def observed_info(
         outputs = vmap_get_outputs_from_measurements(params, measurements, base_model)
         jacs = jac_get_outputs_from_measurements(params, measurements, base_model)
     elif hyperparams.style == InfoStyle.DIFFSIM:
-        outputs = jit_get_outputs_from_sim(
+        outputs = get_outputs_from_sim(
             (
                 params[0],
                 {
@@ -375,7 +375,7 @@ def observed_info(
             ),
             measurements | params[1],
             base_model,
-            debug=False,
+            debug=True,
         )
         jacs = jac_get_outputs_from_sim(
             (
@@ -464,12 +464,12 @@ def _expected_info_diffsim(
             val["contact_normal_W"] = jnp.zeros_like(
                 val["position"]
             )  # Mark as making contact
-    outputs = jit_get_outputs_from_sim(
+    outputs = get_outputs_from_sim(
         params,
         measurements,
         base_model,
         overwrite=False,
-        debug=False,
+        debug=True,
     )
     jacs = jac_get_outputs_from_sim(params, measurements, base_model, overwrite=False)
     jac_final_pose = jacs["final_pose"]

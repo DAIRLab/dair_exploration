@@ -276,7 +276,8 @@ def diffsim_overwrite(
             new_qvel = overwrite_keep_gradient(carry_data.qvel, new_qvel)
 
         ret_data = jit_step(
-            model, carry_data.replace(ctrl=ctrl, qpos=new_qpos, qvel=new_qvel)
+            model,
+            carry_data.replace(ctrl=ctrl, qpos=new_qpos, qvel=new_qvel),
         )
         return (ret_data, ret_data)
 
