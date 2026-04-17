@@ -206,12 +206,14 @@ def get_outputs_from_sim(
     return {"phi": phis, "normal": normals, "final_pose": final_pose}
 
 
-jit_get_outputs_from_sim = jax.jit(get_outputs_from_sim, static_argnames="overwrite")
+jit_get_outputs_from_sim = jax.jit(
+    get_outputs_from_sim, static_argnames=("overwrite", "debug")
+)
 
 # Diffsim needs forward-mode (and it is faster with long graphs)
 # see https://github.com/google-deepmind/mujoco/issues/2259
 jac_get_outputs_from_sim = jax.jit(
-    jax.jacfwd(jit_get_outputs_from_sim), static_argnames="overwrite"
+    jax.jacfwd(jit_get_outputs_from_sim), static_argnames=("overwrite", "debug")
 )
 
 
@@ -363,7 +365,7 @@ def observed_info(
         outputs = vmap_get_outputs_from_measurements(params, measurements, base_model)
         jacs = jac_get_outputs_from_measurements(params, measurements, base_model)
     elif hyperparams.style == InfoStyle.DIFFSIM:
-        outputs = get_outputs_from_sim(
+        outputs = jit_get_outputs_from_sim(
             (
                 params[0],
                 {
@@ -373,7 +375,7 @@ def observed_info(
             ),
             measurements | params[1],
             base_model,
-            debug=True,
+            debug=False,
         )
         jacs = jac_get_outputs_from_sim(
             (
@@ -462,12 +464,12 @@ def _expected_info_diffsim(
             val["contact_normal_W"] = jnp.zeros_like(
                 val["position"]
             )  # Mark as making contact
-    outputs = get_outputs_from_sim(
+    outputs = jit_get_outputs_from_sim(
         params,
         measurements,
         base_model,
         overwrite=False,
-        debug=True,
+        debug=False,
     )
     jacs = jac_get_outputs_from_sim(params, measurements, base_model, overwrite=False)
     jac_final_pose = jacs["final_pose"]
