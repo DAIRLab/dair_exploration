@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from mujoco import mjx
 import numpy as np
 
-from dair_exploration import mjx_util
+from dair_exploration import mjx_util, gui_util
 from dair_exploration.learning import LearnedModel
 
 
@@ -110,22 +110,30 @@ jac_get_outputs_from_measurements = jax.jit(
 )
 
 
-@jax.jit
 def get_outputs_from_sim(
     params: tuple[dict[str, dict[str, jax.Array]], dict[str, jax.Array]],
     measurements: dict[str, dict[str, jax.Array]],
     base_model: mjx.Model,
+    overwrite: bool = True,
+    debug: bool = False,
 ) -> dict[str, jax.Array]:
     """Compute outputs (phi and normals) through diffsim
 
     NOTE: assumes params[1] is only the starting position
     NOTE: measurements should contain object params as well!
+
+    Params:
+        overwrite: whether diffsim should be overwritten by measurements
     """
     # write pose and params to model/data
     param_model = LearnedModel.write_params_to_model(
         params[0], base_model, needs_sim=True
     )
-    first_meas = jax.tree.map(lambda leaf: leaf[0, ...], measurements)
+    first_meas = (
+        jax.tree.map(lambda leaf: leaf[0, ...], measurements)
+        if overwrite
+        else measurements
+    )
     start_data = mjx_util.write_qpos_to_data(
         param_model,
         mjx_util.write_qpos_qvel_to_data(
@@ -135,14 +143,22 @@ def get_outputs_from_sim(
     )
 
     # Sim Forward
-    step_data = mjx_util.diffsim_overwrite(
-        param_model,
-        start_data,
-        measurements["ctrl"],
-        measurements,
-        stacked=True,
-        keep_grad=True,
+    step_data = (
+        mjx_util.diffsim_overwrite(
+            param_model,
+            start_data,
+            measurements["ctrl"],
+            measurements,
+            stacked=True,
+            keep_grad=True,
+        )
+        if overwrite
+        else mjx_util.diffsim(
+            param_model, start_data, measurements["ctrl"], stacked=True
+        )
     )
+    if debug:
+        gui_util.debug_view_simulation(param_model, step_data)
 
     obj_geom_names = params[1].keys()
     assert len(obj_geom_names) == 1  # Only 1 object supported
@@ -190,9 +206,13 @@ def get_outputs_from_sim(
     return {"phi": phis, "normal": normals, "final_pose": final_pose}
 
 
+jit_get_outputs_from_sim = jax.jit(get_outputs_from_sim, static_argnames="overwrite")
+
 # Diffsim needs forward-mode (and it is faster with long graphs)
 # see https://github.com/google-deepmind/mujoco/issues/2259
-jac_get_outputs_from_sim = jax.jit(jax.jacfwd(get_outputs_from_sim))
+jac_get_outputs_from_sim = jax.jit(
+    jax.jacfwd(jit_get_outputs_from_sim), static_argnames="overwrite"
+)
 
 
 ## Functions to compute info from Jacobians
@@ -353,6 +373,7 @@ def observed_info(
             ),
             measurements | params[1],
             base_model,
+            debug=True,
         )
         jacs = jac_get_outputs_from_sim(
             (
@@ -417,7 +438,7 @@ def _expected_info_identity(
         (params[0], qpos_params), robot_pose, base_model
     )
 
-    return _info_from_jacs(outputs, jacs, hyperparams)
+    return _info_from_jacs(outputs, jacs, hyperparams), None
 
 
 def _expected_info_diffsim(
@@ -427,9 +448,31 @@ def _expected_info_diffsim(
     base_model: mjx.Model,
     hyperparams: InfoHyperparameters,
 ) -> jax.Array:
-    """Calculate expected info using the identity style"""
-    # TODO: Implement
+    """Calculate expected info using the diffsim style"""
     assert hyperparams.style == InfoStyle.DIFFSIM
+    measurements = {"ctrl": ctrl} | {
+        geom_name: {
+            "position": ctrl[0, 3 * idx : 3 * (idx + 1)],
+            "velocity": jnp.zeros_like(ctrl[0, 3 * idx : 3 * (idx + 1)]),
+        }
+        for idx, geom_name in enumerate(robot_geom_names)
+    }
+    for val in measurements.values():
+        if isinstance(val, dict):
+            val["contact_normal_W"] = jnp.zeros_like(
+                val["position"]
+            )  # Mark as making contact
+    outputs = get_outputs_from_sim(
+        params,
+        measurements,
+        base_model,
+        overwrite=False,
+        debug=True,
+    )
+    jacs = jac_get_outputs_from_sim(params, measurements, base_model, overwrite=False)
+    jac_final_pose = jacs["final_pose"]
+
+    return _info_from_jacs(outputs, jacs, hyperparams), jac_final_pose
 
 
 def expected_info(
@@ -438,7 +481,7 @@ def expected_info(
     robot_geom_names: tuple,
     base_model: mjx.Model,
     hyperparams: InfoHyperparameters,
-) -> jax.Array:
+) -> tuple[jax.Array, Optional[jax.Array]]:
     """Calculate expected info
 
     Args:
@@ -447,10 +490,15 @@ def expected_info(
         base_model: model from initial mcjf/urdf
         hyperparams
     Returns:
-        n_params x n_params expected info
+        n_params x n_params observed info
+        Optional: the jacobian of the final pose w.r.t. the geometry and initial pose
     """
     if hyperparams.style == InfoStyle.IDENTITY:
         return _expected_info_identity(
+            ctrl, params, robot_geom_names, base_model, hyperparams
+        )
+    elif hyperparams.style == InfoStyle.DIFFSIM:
+        return _expected_info_diffsim(
             ctrl, params, robot_geom_names, base_model, hyperparams
         )
     else:

@@ -4,7 +4,7 @@
 
 import time
 from tkinter import Tk, Scale, DoubleVar
-from typing import Optional
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +15,8 @@ import meshcat
 from meshcat import geometry
 import numpy as np
 import trimesh
+
+from dair_exploration import mjx_util
 
 
 class MJXMeshcatVisualizer:
@@ -32,13 +34,19 @@ class MJXMeshcatVisualizer:
     _scale: Scale
     _timestep: DoubleVar
 
-    def __init__(self, model: mjx.Model, init_data: Optional[mjx.Data]) -> None:
+    def __init__(
+        self, model: mjx.Model, init_data: Optional[mjx.Data], slider=True
+    ) -> None:
         self._meshcat = meshcat.Visualizer().open()
         print(f"Started Meshcat server at: {self._meshcat.url()}")
         self._model = model
         self._data = []
         self._trajs = None
-        self.reinit_tk()
+        if slider:
+            self.reinit_tk()
+        else:
+            self._timestep = DoubleVar(value=0.0)
+            self._scale = None
         self.update_visuals(
             model, [mjx.make_data(model)] if init_data is None else [init_data], None
         )
@@ -81,7 +89,8 @@ class MJXMeshcatVisualizer:
         # Parameter Overwrite
         self._data = data_trajectory if data_trajectory is not None else self._data
         self._trajs = traj_overwrite if traj_overwrite is not None else self._trajs
-        self._scale.configure(to=float(len(self._data) - 1))
+        if self._scale is not None:
+            self._scale.configure(to=float(len(self._data) - 1))
         self.update()
 
     def reinit_tk(self, new_val=0.0) -> None:
@@ -169,7 +178,7 @@ class MJXMeshcatVisualizer:
         """
         Sweep through the entire trajectory
         """
-        end = int(self._scale.config()["to"][-1])
+        end = len(self._data)
 
         for timestep in range(end):
             start = time.perf_counter()
@@ -213,3 +222,18 @@ class MJXMeshcatVisualizer:
     def clear_action_samples(self):
         """Clear lines from action samples"""
         self._meshcat["actions"].delete()
+
+
+def debug_view_simulation(model: mjx.Model, data=Union[list[mjx.Data], mjx.Data]):
+    """Spin up a temporary Meshcat instance to visualize the data"""
+
+    temp_vis = MJXMeshcatVisualizer(model, None, slider=False)
+
+    temp_vis.update_visuals(
+        data_trajectory=data if isinstance(data, list) else mjx_util.data_unstack(data)
+    )
+
+    temp_vis.sweep()
+
+    while input("Visualizing. Press [c] to proceed, [Enter] to replay...") != "c":
+        temp_vis.sweep()

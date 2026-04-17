@@ -196,18 +196,18 @@ def main(
                 learned_model.base_model,
                 InfoHyperparameters(),
             )
-            # test_exp = expected_info(
-            #     dataset.full_trajectory()["ctrl"],
-            #     (learned_model.params, learned_traj.final_q),
-            #     tuple(
-            #         geom_name
-            #         for geom_name in dataset.full_trajectory().keys()
-            #         if isinstance(dataset.full_trajectory()[geom_name], dict)
-            #         and "contact_normal_W" in dataset.full_trajectory()[geom_name]
-            #     ),
-            #     learned_model.base_model,
-            #     InfoHyperparameters(),
-            # )
+            test_exp, test_exp_jac = expected_info(
+                dataset.full_trajectory()["ctrl"],
+                (learned_model.params, learned_traj.final_q),
+                tuple(
+                    geom_name
+                    for geom_name in dataset.full_trajectory().keys()
+                    if isinstance(dataset.full_trajectory()[geom_name], dict)
+                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+                ),
+                learned_model.base_model,
+                InfoHyperparameters(),
+            )
             breakpoint()
 
         elif command_char == "e" or command_char == "l":
