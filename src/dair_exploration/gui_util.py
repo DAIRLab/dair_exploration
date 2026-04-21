@@ -19,6 +19,23 @@ import trimesh
 from dair_exploration import mjx_util
 
 
+class DummyVar:
+    """Dummy to replace DoubleVar"""
+
+    _value: float
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        """Get value"""
+        return self._value
+
+    def set(self, value):
+        """Set value"""
+        self._value = value
+
+
 class MJXMeshcatVisualizer:
     """
     Meshcat Comparison Visualization
@@ -32,7 +49,7 @@ class MJXMeshcatVisualizer:
     # Visualization
     _root: Tk
     _scale: Scale
-    _timestep: DoubleVar
+    _timestep: Union[DoubleVar, DummyVar]
 
     def __init__(
         self, model: mjx.Model, init_data: Optional[mjx.Data], slider=True
@@ -45,7 +62,7 @@ class MJXMeshcatVisualizer:
         if slider:
             self.reinit_tk()
         else:
-            self._timestep = DoubleVar(value=0.0)
+            self._timestep = DummyVar(value=0.0)
             self._scale = None
         self.update_visuals(
             model, [mjx.make_data(model)] if init_data is None else [init_data], None

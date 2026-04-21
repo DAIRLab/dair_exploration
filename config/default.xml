@@ -32,7 +32,7 @@
     </body>
 
     <!-- Body initial pose, initial guess -->
-    <body name="object" pos="0. 0. 0.02">
+    <body name="object" pos="0. 0. 0.021" quat="1 0 0 0.0001">
       <freejoint />
 
       <!-- Body Inertia properties, initial guess -->

@@ -261,8 +261,15 @@ def diffsim_overwrite(
     def _sim_step(carry_data, in_x):
         """Inner sim step"""
         ctrl, posvel = in_x
-        new_qpos = carry_data.qpos
-        new_qvel = carry_data.qvel
+        # Run Sim
+        ret_data = jit_step(
+            model,
+            carry_data.replace(ctrl=ctrl),
+        )
+
+        # Overwrite with provided data
+        new_qpos = ret_data.qpos
+        new_qvel = ret_data.qvel
         for geom_name in posvel.keys():
             if not isinstance(posvel[geom_name], dict):
                 continue
@@ -270,15 +277,10 @@ def diffsim_overwrite(
             qvelidx = qvelidx_from_geom_name(model, geom_name)
             new_qpos = new_qpos.at[qposidx].set(posvel[geom_name]["position"])
             new_qvel = new_qvel.at[qvelidx].set(posvel[geom_name]["velocity"])
-
         if keep_grad:
-            new_qpos = overwrite_keep_gradient(carry_data.qpos, new_qpos)
-            new_qvel = overwrite_keep_gradient(carry_data.qvel, new_qvel)
-
-        ret_data = jit_step(
-            model,
-            carry_data.replace(ctrl=ctrl, qpos=new_qpos, qvel=new_qvel),
-        )
+            new_qpos = overwrite_keep_gradient(ret_data.qpos, new_qpos)
+            new_qvel = overwrite_keep_gradient(ret_data.qvel, new_qvel)
+        ret_data = ret_data.replace(qpos=new_qpos, qvel=new_qvel)
         return (ret_data, ret_data)
 
     _, data_stacked = jax.lax.scan(_sim_step, init_data, (ctrl, posvel_overwrite))
