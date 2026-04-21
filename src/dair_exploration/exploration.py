@@ -36,9 +36,7 @@ class InfoHyperparameters:  # pylint: disable=too-many-instance-attributes
     # Loss Weights
     phi_nominal: float = 0.002  # m, distance where p(contact_measured) drops below CI
     phi_ci: float = 0.05  # Confidence Interval (0,1) for above
-    normal_var: float = (
-        0.01519224261  # cos(radians) [default 10 degrees], variance of cos(normal angle deviation)
-    )
+    normal_var: float = 0.2  # variance of normal vector 2-norm
 
     # Computation Parameters
     epsilon: float = 1e-8
@@ -329,7 +327,7 @@ def _info_from_jacs(
 
     # Create multiplier
     normal_mult = (
-        contact_bool * jnp.reciprocal(hyperparams.normal_var) * jnp.eye(3)
+        contact_bool * 0.5 * jnp.reciprocal(2.0 * hyperparams.normal_var) * jnp.eye(3)
     )  # (n_T*n_contacts, 3, 3)
 
     # Create normal info
@@ -365,7 +363,7 @@ def observed_info(
         outputs = vmap_get_outputs_from_measurements(params, measurements, base_model)
         jacs = jac_get_outputs_from_measurements(params, measurements, base_model)
     elif hyperparams.style == InfoStyle.DIFFSIM:
-        outputs = get_outputs_from_sim(
+        outputs = jit_get_outputs_from_sim(
             (
                 params[0],
                 {
@@ -375,7 +373,7 @@ def observed_info(
             ),
             measurements | params[1],
             base_model,
-            debug=True,
+            debug=False,
         )
         jacs = jac_get_outputs_from_sim(
             (
@@ -464,12 +462,12 @@ def _expected_info_diffsim(
             val["contact_normal_W"] = jnp.zeros_like(
                 val["position"]
             )  # Mark as making contact
-    outputs = get_outputs_from_sim(
+    outputs = jit_get_outputs_from_sim(
         params,
         measurements,
         base_model,
         overwrite=False,
-        debug=True,
+        debug=False,
     )
     jacs = jac_get_outputs_from_sim(params, measurements, base_model, overwrite=False)
     jac_final_pose = jacs["final_pose"]

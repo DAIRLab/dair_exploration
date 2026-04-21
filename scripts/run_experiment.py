@@ -190,24 +190,28 @@ def main(
             ## END Debug Breakpoint
 
         elif command_char == "a":
+            # Give it ground-truth for testing
             test_obs, test_jac = observed_info(
-                (learned_model.params, learned_traj.get_full_trajectory()),
+                (
+                    learned_model.params,
+                    {"object-geom": dataset.full_trajectory()["true-geom"]},
+                ),
                 dataset.full_trajectory(),
                 learned_model.base_model,
                 InfoHyperparameters(),
             )
-            test_exp, test_exp_jac = expected_info(
-                dataset.full_trajectory()["ctrl"],
-                (learned_model.params, learned_traj.final_q),
-                tuple(
-                    geom_name
-                    for geom_name in dataset.full_trajectory().keys()
-                    if isinstance(dataset.full_trajectory()[geom_name], dict)
-                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
-                ),
-                learned_model.base_model,
-                InfoHyperparameters(),
-            )
+            # test_exp, test_exp_jac = expected_info(
+            #     dataset.full_trajectory()["ctrl"],
+            #     (learned_model.params, learned_traj.final_q),
+            #     tuple(
+            #         geom_name
+            #         for geom_name in dataset.full_trajectory().keys()
+            #         if isinstance(dataset.full_trajectory()[geom_name], dict)
+            #         and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+            #     ),
+            #     learned_model.base_model,
+            #     InfoHyperparameters(),
+            # )
             breakpoint()
 
         elif command_char == "e" or command_char == "l":

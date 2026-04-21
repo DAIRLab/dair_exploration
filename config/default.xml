@@ -32,7 +32,7 @@
     </body>
 
     <!-- Body initial pose, initial guess -->
-    <body name="object" pos="0. 0. 0.021" quat="1 0 0 0.0001">
+    <body name="object" pos="0.001 0. 0.021" quat="1 0 0 0.0001">
       <freejoint />
 
       <!-- Body Inertia properties, initial guess -->
@@ -92,7 +92,7 @@
     <exclude name="spherebots" body1="spherebot1" body2="spherebot2" />
   </contact> -->
 
-
+[-0.9999916 , -0.00065661, -0.00404559]
   <!-- PD Controllers on both robot spheres -->
   <actuator>
     <position joint="spherebot1-x" kp="5"/>
