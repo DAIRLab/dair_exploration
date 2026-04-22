@@ -194,25 +194,25 @@ def main(
             test_obs, test_jac = observed_info(
                 (
                     learned_model.params,
-                    {"object-geom": dataset.full_trajectory()["true-geom"]},
+                    learned_traj.get_full_trajectory(),
+                    # {"object-geom": dataset.full_trajectory()["true-geom"]},
                 ),
                 dataset.full_trajectory(),
                 learned_model.base_model,
                 InfoHyperparameters(),
             )
-            # test_exp, test_exp_jac = expected_info(
-            #     dataset.full_trajectory()["ctrl"],
-            #     (learned_model.params, learned_traj.final_q),
-            #     tuple(
-            #         geom_name
-            #         for geom_name in dataset.full_trajectory().keys()
-            #         if isinstance(dataset.full_trajectory()[geom_name], dict)
-            #         and "contact_normal_W" in dataset.full_trajectory()[geom_name]
-            #     ),
-            #     learned_model.base_model,
-            #     InfoHyperparameters(),
-            # )
-            breakpoint()
+            test_exp, test_exp_jac = expected_info(
+                dataset.full_trajectory()["ctrl"],
+                (learned_model.params, learned_traj.final_q),
+                tuple(
+                    geom_name
+                    for geom_name in dataset.full_trajectory().keys()
+                    if isinstance(dataset.full_trajectory()[geom_name], dict)
+                    and "contact_normal_W" in dataset.full_trajectory()[geom_name]
+                ),
+                learned_model.base_model,
+                InfoHyperparameters(),
+            )
 
         elif command_char == "e" or command_char == "l":
             if command_char == "e":
@@ -283,8 +283,8 @@ def main(
                 {
                     trifinger_lcm.object_geom_name: [
                         (
-                            row[4:],
-                            Rotation.from_quat(row[:4], scalar_first=True),
+                            row[:3],
+                            Rotation.from_quat(row[3:], scalar_first=True),
                         )
                         for row in dataset.full_trajectory()[
                             trifinger_lcm.object_geom_name

@@ -350,9 +350,17 @@ class TrifingerLCMService:
             assert object_vel_interp.shape == (len(densetact_time_s), num_velocities)
             ret[obj_name]["velocity"] = fn_prune(jnp.array(object_vel_interp))
 
+            # Swap to Mujoco order (position then orientation)
+            ret[obj_name]["position"] = jnp.hstack(
+                [ret[obj_name]["position"][:, 4:], ret[obj_name]["position"][:, :4]]
+            )
+            ret[obj_name]["velocity"] = jnp.hstack(
+                [ret[obj_name]["velocity"][:, 3:], ret[obj_name]["velocity"][:, :3]]
+            )
+
         # Return
         # Prune repeat timestamps
-        # Already done by fn_prune
+        # (Already done by fn_prune)
         # ret_pruned = jnp.concatenate([ret[:1], ret[1:][np.nonzero(densetact_dt.flatten())]])
         print(f"Number of unique samples: {len(ret["time"])}")
         return ret
