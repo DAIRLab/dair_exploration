@@ -37,6 +37,7 @@ allow-direct-references = true
 dev = [
   "black", # Initial Linter
   "pylint", # Final Linter
+  "matplotlib", # Visualization
 ]
 
 [project.urls]

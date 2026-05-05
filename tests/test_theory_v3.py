@@ -179,6 +179,8 @@ def sample_state_particles(
     radius: jax.Array,
     rng: jax.Array,
     hp: SvObservedInfoHyperparameters,
+    visualize: bool = True,
+    visualize_pause_s: float = 0.05,
 ) -> jax.Array:
     """SVGD particles (nT, Ni, 2). Last timestep rows equal x_terminal."""
     n_t, _ = learned_traj.shape
@@ -190,7 +192,39 @@ def sample_state_particles(
         particles = particles.at[t].set(learned_traj[t] + noise)
     particles = particles.at[n_t - 1].set(jnp.broadcast_to(x_terminal, (ni, 2)))
 
-    for _ in range(hp.n_svgd_iters):
+    if visualize:
+        # Local import so tests/headless runs don't require matplotlib.
+        import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+
+        cmap = plt.get_cmap("viridis", n_t)
+        plt.ion()
+
+    for it in range(hp.n_svgd_iters):
+        if visualize:
+            parts_np = jax.device_get(particles)
+            learned_np = jax.device_get(learned_traj)
+            xT_np = jax.device_get(x_terminal)
+
+            plt.clf()
+            for t in range(n_t):
+                xy = parts_np[t]
+                plt.scatter(
+                    xy[:, 0],
+                    xy[:, 1],
+                    s=12,
+                    alpha=0.65,
+                    color=cmap(t),
+                    edgecolors="none",
+                )
+            plt.plot(learned_np[:, 0], learned_np[:, 1], "k--", linewidth=1.0, alpha=0.7)
+            plt.scatter([xT_np[0]], [xT_np[1]], c="k", s=30, marker="x")
+            plt.title(f"SVGD particles by timestep — iter {it + 1}/{hp.n_svgd_iters}")
+            plt.xlabel("x")
+            plt.ylabel("z")
+            plt.axis("equal")
+            plt.grid(True, alpha=0.2)
+            plt.pause(visualize_pause_s)
+        
         new_parts = [particles[n_t - 1]]
         for t in range(n_t - 2, -1, -1):
             new_parts.append(
@@ -204,6 +238,9 @@ def sample_state_particles(
         rev = list(reversed(new_parts))
         stacked = jnp.stack(rev, axis=0)
         particles = stacked.at[n_t - 1].set(jnp.broadcast_to(x_terminal, (ni, 2)))
+
+    if visualize:
+        plt.ioff()
     return particles
 
 
@@ -376,10 +413,12 @@ def observed_info(
 def test_observed_info_ground_contact_no_spherebot_contact():
     """nT=3: object lands on ground; spherebots stay outside the sphere."""
     enable_jax_cache()
-    n_t = 3
+    n_t = 5
     r = jnp.array([[0.5]])
     learned = jnp.array(
         [
+            [0.0, 4.0],
+            [0.0, 3.0],
             [0.0, 2.0],
             [0.0, 1.0],
             [0.0, 0.5],
@@ -403,7 +442,7 @@ def test_observed_info_ground_contact_no_spherebot_contact():
 
     info_hp = InfoHyperparameters(style=InfoStyle.SAMPLING)
     sv_hp = SvObservedInfoHyperparameters(
-        n_particles=48, n_svgd_iters=16, svgd_step=0.12, init_sample_std=0.05
+        n_particles=200, n_svgd_iters=30, svgd_step=2e-3, init_sample_std=0.2
     )
     i_mat, jac_final = observed_info(
         (geom, traj), measurements, None, info_hp, sv_hp=sv_hp
