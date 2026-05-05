@@ -179,7 +179,7 @@ def sample_state_particles(
     radius: jax.Array,
     rng: jax.Array,
     hp: SvObservedInfoHyperparameters,
-    visualize: bool = True,
+    visualize: bool = False,
     visualize_pause_s: float = 0.05,
 ) -> jax.Array:
     """SVGD particles (nT, Ni, 2). Last timestep rows equal x_terminal."""
@@ -293,15 +293,60 @@ def grad_omega_log_p_xt_given_xT(
     n_t: int,
     particles: jax.Array,
 ) -> jax.Array:
-    """Eq. (13)-(14): gradient of log p(x_t|x_T) w.r.t. omega = [r, x_Tx, x_Tz]."""
-    xt_f = jax.lax.stop_gradient(xt)
-    parts_f = jax.lax.stop_gradient(particles)
+    """∇_ω log p(x_{t,i}|x_T) for ω = [r, x_Tx, x_Tz], per sv_observed_info.pdf eq. (12)-(14).
 
-    def scalar_log(v: jax.Array) -> jax.Array:
-        r, xT = v[0], v[1:3]
-        return log_p_xt_given_xT(xt_f, t, n_t, parts_f, xT, r, grad_wrt_terminal=True)
+    Eq. (12): at the timestep before the terminal, ∇_ω log p(x_{T-1,i}|x_T) = ∇_ω f_θ(x_{T-1,i}, x_T).
+    Eq. (13)-(14): for earlier timesteps, softmax over j of log p(x_{t,i}|x_{t+1,j}) (equivalently
+    f_θ) minus (1/N_i) uniform weights, dotted with ∇_ω(log p(x_{t,i}|x_{t+1,j}) + log p(x_{t+1,j}|x_T)).
+    Particle positions are stop-grad (no gradient through SVGD samples); ω enters through r, x_T,
+    and the recursive dependence of log p(x_{t+1,j}|x_T) on ω.
+    """
+    xt_sg = jax.lax.stop_gradient(xt)
+    parts_sg = jax.lax.stop_gradient(particles)
+    ni = parts_sg.shape[1]
 
-    return jax.grad(scalar_log)(omega_vec)
+    if t == n_t - 1:
+
+        def scalar_term(v: jax.Array) -> jax.Array:
+            x_t2 = v[1:3]
+            return _terminal_log_factor(xt_sg, x_t2)
+
+        return jax.grad(scalar_term)(omega_vec)
+
+    if t == n_t - 2:
+
+        def scalar_f(v: jax.Array) -> jax.Array:
+            r2, x_t2 = v[0], v[1:3]
+            return logpdf_dynamics(x_t2, xt_sg, r2)
+
+        return jax.grad(scalar_f)(omega_vec)
+
+    def f_at_particle(v: jax.Array, j: jax.Array) -> jax.Array:
+        r2, x_t2 = v[0], v[1:3]
+        if t + 1 == n_t - 1:
+            xp1 = x_t2
+        else:
+            xp1 = parts_sg[t + 1, j]
+        return logpdf_dynamics(xp1, xt_sg, r2)
+
+    fs = jax.vmap(lambda j: f_at_particle(omega_vec, j))(jnp.arange(ni))
+    w = jax.nn.softmax(fs) - 1.0 / float(ni)
+
+    def inner_grad_j(j: jax.Array) -> jax.Array:
+        def f_part(v: jax.Array) -> jax.Array:
+            return f_at_particle(v, j)
+
+        g_f = jax.grad(f_part)(omega_vec)
+        x_for_rec = (
+            omega_vec[1:3]
+            if (t + 1 == n_t - 1)
+            else jax.lax.stop_gradient(parts_sg[t + 1, j])
+        )
+        g_rec = grad_omega_log_p_xt_given_xT(omega_vec, x_for_rec, t + 1, n_t, particles)
+        return g_f + g_rec
+
+    jac_inner = jax.vmap(inner_grad_j)(jnp.arange(ni))
+    return jnp.einsum("i,id->d", w, jac_inner)
 
 
 def grad_omega_log_p_mt_given_xT(
@@ -313,36 +358,27 @@ def grad_omega_log_p_mt_given_xT(
     particles: jax.Array,
     info_hp: InfoHyperparameters,
 ) -> jax.Array:
-    """Eq. (11): softmax over i of (logmeas + logstate) minus softmax of logstate only."""
+    """Eq. (11): softmax over particles i of log p(m_t|x_{t,i}) only, minus (1/N_i)·1, dotted with
+    ∇_ω(log p(m_t|x_{t,i}) + log p(x_{t,i}|x_T)). The state term uses grad_omega_log_p_xt_given_xT
+    (eq. 12-14), not autograd through log_p_xt_given_xT.
+    """
     xt_sg = jax.lax.stop_gradient(xt_samples)
+    ni = xt_sg.shape[0]
 
-    def unpack(v: jax.Array) -> tuple[jax.Array, jax.Array]:
-        return v[0], v[1:3]
+    def log_meas_only(v: jax.Array, xi: jax.Array) -> jax.Array:
+        r, _ = v[0], v[1:3]
+        return logmeas_timestep(measurements_t, xi, r, info_hp)
 
-    def log_num_i(v: jax.Array, xi: jax.Array) -> jax.Array:
-        r, xT = unpack(v)
-        lm = logmeas_timestep(measurements_t, xi, r, info_hp)
-        ls = log_p_xt_given_xT(
-            xi, t, n_t, particles, xT, r, grad_wrt_terminal=True
-        )
-        return lm + ls
+    log_meas_per_i = jax.vmap(lambda xi: log_meas_only(omega_vec, xi))(xt_sg)
+    w = jax.nn.softmax(log_meas_per_i) - 1.0 / float(ni)
 
-    def log_den_i(v: jax.Array, xi: jax.Array) -> jax.Array:
-        r, xT = unpack(v)
-        return log_p_xt_given_xT(xi, t, n_t, particles, xT, r, grad_wrt_terminal=True)
+    def jac_row_i(xi: jax.Array) -> jax.Array:
+        g_meas = jax.grad(lambda v: log_meas_only(v, xi))(omega_vec)
+        g_state = grad_omega_log_p_xt_given_xT(omega_vec, xi, t, n_t, particles)
+        return g_meas + g_state
 
-    log_nums = jax.vmap(lambda xi: log_num_i(omega_vec, xi))(xt_sg)
-    log_dens = jax.vmap(lambda xi: log_den_i(omega_vec, xi))(xt_sg)
-    w_num = jax.nn.softmax(log_nums)
-    w_den = jax.nn.softmax(log_dens)
-
-    jac_num = jax.vmap(
-        lambda xi: jax.jacrev(lambda v: log_num_i(v, xi))(omega_vec)
-    )(xt_sg)
-    jac_den = jax.vmap(
-        lambda xi: jax.jacrev(lambda v: log_den_i(v, xi))(omega_vec)
-    )(xt_sg)
-    return w_num @ jac_num - w_den @ jac_den
+    jac = jax.vmap(jac_row_i)(xt_sg)
+    return jnp.einsum("i,id->d", w, jac)
 
 
 def pack_omega(
