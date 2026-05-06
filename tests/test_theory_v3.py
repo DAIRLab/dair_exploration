@@ -179,7 +179,7 @@ def sample_state_particles(
     radius: jax.Array,
     rng: jax.Array,
     hp: SvObservedInfoHyperparameters,
-    visualize: bool = False,
+    visualize: bool = True,
     visualize_pause_s: float = 0.05,
 ) -> jax.Array:
     """SVGD particles (nT, Ni, 2). Last timestep rows equal x_terminal."""
@@ -370,7 +370,8 @@ def grad_omega_log_p_mt_given_xT(
         return logmeas_timestep(measurements_t, xi, r, info_hp)
 
     log_meas_per_i = jax.vmap(lambda xi: log_meas_only(omega_vec, xi))(xt_sg)
-    w = jax.nn.softmax(log_meas_per_i) - 1.0 / float(ni)
+    weights = jax.nn.softmax(log_meas_per_i) - 1.0 / float(ni)
+    breakpoint()
 
     def jac_row_i(xi: jax.Array) -> jax.Array:
         g_meas = jax.grad(lambda v: log_meas_only(v, xi))(omega_vec)
@@ -378,7 +379,7 @@ def grad_omega_log_p_mt_given_xT(
         return g_meas + g_state
 
     jac = jax.vmap(jac_row_i)(xt_sg)
-    return jnp.einsum("i,id->d", w, jac)
+    return jnp.einsum("i,id->d", weights, jac)
 
 
 def pack_omega(
@@ -492,6 +493,7 @@ def test_observed_info_ground_contact_no_spherebot_contact():
     # Smoke: dynamics one-step matches resting height at last time.
     x_last = learned[-1]
     assert jnp.allclose(dynamics_object(x_last, r), x_last)
+    breakpoint()
 
 
 if __name__ == "__main__":
