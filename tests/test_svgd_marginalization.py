@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """Tests for SVGD marginalization utilities."""
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from dair_exploration.svgd_marginalization import SVGDHyperparameters, svgd_step
 # -----------------------------------------------------------------------------
 SPEED = 1.0
 BASEVAR = 0.001
-PENALTY = 100.0
+PENALTY = 1000.0
 
 # Small step for 2D dynamics SVGD (large steps blow up the particle drive / kernel term).
 _DYNAMICS_SVGD_STEP = 1e-3
@@ -344,7 +346,7 @@ def test_svgd_dynamics_2d_visualization_interactive():
         ]
     )
     hp = SVGDHyperparameters(
-        n_svgd_iters=100, svgd_step=_DYNAMICS_SVGD_STEP, init_sample_std=0.2
+        n_svgd_iters=100, svgd_step=_DYNAMICS_SVGD_STEP, init_sample_std=0.5
     )
     sample_dynamics_particles_svgd(
         learned,
@@ -360,5 +362,5 @@ def test_svgd_dynamics_2d_visualization_interactive():
 
 if __name__ == "__main__":
     test_svgd_step_jit_compiles_and_runs()
-    test_svgd_dynamics_2d_ground_contact_particles()
+    test_svgd_dynamics_2d_visualization_interactive()
     print("test_svgd_marginalization: ok")

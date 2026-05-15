@@ -371,7 +371,6 @@ def grad_omega_log_p_mt_given_xT(
 
     log_meas_per_i = jax.vmap(lambda xi: log_meas_only(omega_vec, xi))(xt_sg)
     weights = jax.nn.softmax(log_meas_per_i) - 1.0 / float(ni)
-    breakpoint()
 
     def jac_row_i(xi: jax.Array) -> jax.Array:
         g_meas = jax.grad(lambda v: log_meas_only(v, xi))(omega_vec)
