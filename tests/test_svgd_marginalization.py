@@ -14,7 +14,14 @@ import jax.numpy as jnp
 import pytest
 
 from dair_exploration.file_util import enable_jax_cache
-from dair_exploration.svgd_marginalization import SVGDHyperparameters, svgd_step
+from dair_exploration.svgd_marginalization import (
+    SVGDHyperparameters,
+    _dynamics_grad_wrt_params_one_particle,
+    _meas_grad_wrt_params_one_timestep,
+    _tree_broadcast_params_zeros,
+    grad_meas_wrt_params,
+    svgd_step,
+)
 
 # -----------------------------------------------------------------------------
 # Copied from tests/test_theory_v3.py — 2D contact-style dynamics conditional.
@@ -153,6 +160,161 @@ def sample_dynamics_particles_svgd(
         plt.ioff()
 
     return particles
+
+
+def test_dynamics_grad_one_particle_matches_eq16():
+    """Eq. 16 for a single ``(t, i)`` against an explicit softmax sum."""
+    ni = 8
+    params = {"radius": jnp.array([[0.5]])}
+    state = jax.random.normal(jax.random.key(9), (2, ni, 2)) * 0.05
+    g_next = _tree_broadcast_params_zeros(params, ni)
+    g_next = jax.tree.map(
+        lambda leaf: jax.random.normal(jax.random.key(10), leaf.shape) * 0.01,
+        g_next,
+    )
+
+    def logdyn(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+        return logpdf_dynamics(pair[1], pair[0], params["radius"])
+
+    def grad_dyn(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+        return jax.grad(lambda p: logpdf_dynamics(pair[1], pair[0], p["radius"]))(params)
+
+    xt_i = state[0, 0]
+    xt_plus = state[1]
+    got = _dynamics_grad_wrt_params_one_particle(
+        xt_i, xt_plus, g_next, logdyn, grad_dyn, ni
+    )
+
+    f_logits = jnp.array([logdyn((xt_i, xt_plus[j])) for j in range(ni)])
+    w = jax.nn.softmax(f_logits)
+    term_radii = jnp.stack(
+        [
+            grad_dyn((xt_i, xt_plus[j]))["radius"] + g_next["radius"][j]
+            for j in range(ni)
+        ],
+        axis=0,
+    )
+    weighted = jnp.sum(w[:, None, None] * term_radii, axis=0)
+    mean_next = jnp.mean(g_next["radius"], axis=0)
+    expected = {"radius": weighted - mean_next}
+    assert jax.tree.all(
+        jax.tree.map(
+            lambda a, b: jnp.allclose(a, b, rtol=1e-6, atol=1e-7), got, expected
+        )
+    )
+
+
+def test_meas_grad_one_timestep_matches_eq11_12():
+    """Eqs. 11–12 for one timestep against an explicit softmax sum."""
+    ni = 8
+    meas_var = 0.01
+    params = {"radius": jnp.array([[0.5]])}
+    state = jax.random.normal(jax.random.key(11), (1, ni, 2)) * 0.05
+    measurements = jax.random.normal(jax.random.key(12), (1, 2)) * 0.05
+    g_dyn = _tree_broadcast_params_zeros(params, ni)
+    g_dyn = jax.tree.map(
+        lambda leaf: jax.random.normal(jax.random.key(13), leaf.shape) * 0.01,
+        g_dyn,
+    )
+
+    def logmeas(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+        m_t, x_t = pair
+        return -0.5 * jnp.reciprocal(meas_var) * jnp.sum(jnp.square(m_t - x_t))
+
+    def grad_meas(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+        m_t, x_t = pair
+        return jax.grad(
+            lambda p, m=m_t, x=x_t: -0.5
+            * jnp.reciprocal(meas_var)
+            * jnp.sum(jnp.square(m - x))
+        )(params)
+
+    got = _meas_grad_wrt_params_one_timestep(
+        0, measurements, state, g_dyn, logmeas, grad_meas, ni
+    )
+    m_t = measurements[0]
+    xt = state[0]
+    logits = jnp.array([logmeas((m_t, xt[i])) for i in range(ni)])
+    w = jax.nn.softmax(logits)
+    term_radii = jnp.stack(
+        [
+            grad_meas((m_t, xt[i]))["radius"] + g_dyn["radius"][i]
+            for i in range(ni)
+        ],
+        axis=0,
+    )
+    weighted = jnp.sum(w[:, None, None] * term_radii, axis=0)
+    mean_dyn = jnp.mean(g_dyn["radius"], axis=0)
+    expected = {"radius": weighted - mean_dyn}
+    assert jax.tree.all(
+        jax.tree.map(
+            lambda a, b: jnp.allclose(a, b, rtol=1e-6, atol=1e-7), got, expected
+        )
+    )
+
+
+def test_grad_meas_wrt_params_matches_pdf_equations():
+    """``grad_meas_wrt_params`` is finite, JIT-safe, and self-consistent under ``vmap``."""
+    enable_jax_cache()
+    n_t, ni = 3, 12
+    meas_var = 0.01
+    rng = jax.random.key(42)
+    k1, k2 = jax.random.split(rng, 2)
+    params = {"radius": jnp.array([[0.5]])}
+    state = jax.random.normal(k1, (n_t, ni, 2)) * 0.08
+    state = state.at[-1].set(jnp.array([0.0, 0.5]))
+    measurements = jax.random.normal(k2, (n_t, 2)) * 0.05
+
+    def logdyn(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+        x_t, x_tp1 = pair
+        return logpdf_dynamics(x_tp1, x_t, params["radius"])
+
+    def grad_dyn(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+        return jax.grad(lambda p: logpdf_dynamics(pair[1], pair[0], p["radius"]))(params)
+
+    def logmeas(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+        m_t, x_t = pair
+        return -0.5 * jnp.reciprocal(meas_var) * jnp.sum(jnp.square(m_t - x_t))
+
+    def grad_meas(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+        m_t, x_t = pair
+        return jax.grad(
+            lambda p, m=m_t, x=x_t: -0.5
+            * jnp.reciprocal(meas_var)
+            * jnp.sum(jnp.square(m - x))
+        )(params)
+
+    impl = grad_meas_wrt_params(
+        params,
+        measurements,
+        state,
+        logdyn,
+        grad_dyn,
+        logmeas,
+        grad_meas,
+    )
+    assert impl["radius"].shape == (n_t, 1, 1)
+    assert jnp.all(jnp.isfinite(impl["radius"]))
+
+    jitted = jax.jit(
+        grad_meas_wrt_params,
+        static_argnames=(
+            "logpdf_dynamics",
+            "grad_logpdf_dynamics",
+            "logpdf_meas",
+            "grad_logpdf_meas",
+        ),
+    )
+    impl2 = jitted(
+        params,
+        measurements,
+        state,
+        logdyn,
+        grad_dyn,
+        logmeas,
+        grad_meas,
+    )
+    assert jnp.allclose(impl["radius"], impl2["radius"])
 
 
 def test_svgd_step_jit_compiles_and_runs():
