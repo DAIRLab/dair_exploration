@@ -362,5 +362,5 @@ def test_svgd_dynamics_2d_visualization_interactive():
 
 if __name__ == "__main__":
     test_svgd_step_jit_compiles_and_runs()
-    test_svgd_dynamics_2d_visualization_interactive()
+    test_svgd_dynamics_2d_ground_contact_particles()
     print("test_svgd_marginalization: ok")
