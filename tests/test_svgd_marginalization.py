@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from functools import partial
@@ -20,6 +21,7 @@ from dair_exploration.svgd_marginalization import (
     _meas_grad_wrt_params_one_timestep,
     _tree_broadcast_params_zeros,
     grad_meas_wrt_params,
+    observed_info_svgd,
     svgd_step,
 )
 
@@ -32,6 +34,18 @@ PENALTY = 1000.0
 
 # Small step for 2D dynamics SVGD (large steps blow up the particle drive / kernel term).
 _DYNAMICS_SVGD_STEP = 1e-3
+
+# Measurement model (``docs/sv_observed_info.pdf`` Eqs. 3–4), aligned with ``learning.py``.
+PHI_NOMINAL = 0.002
+PHI_CI = 0.05
+MEAS_ALPHA = math.log((1.0 / PHI_CI) - 1.0) / PHI_NOMINAL
+MEAS_SIGMA_N = 0.01519224261
+_LOG_2PI_SIGMA_N_SQ = math.log(2.0 * math.pi * MEAS_SIGMA_N**2)
+
+# Fixed planar sensor(s): world-frame position per name.
+DEFAULT_SENSOR_POSITIONS: dict[str, jax.Array] = {
+    "finger": jnp.array([0.35, 1.75]),
+}
 
 
 def logpdf_dynamics(
@@ -55,6 +69,84 @@ def logpdf_dynamics(
         )
         - PENALTY * jnp.abs(jnp.minimum(zt - r, 0.0))
     )
+
+
+def signed_distance_phi(
+    sensor_position: jax.Array,
+    object_center: jax.Array,
+    radius: jax.Array,
+) -> jax.Array:
+    """``phi = ||sensor - center|| - radius`` (positive when the sensor clears the object)."""
+    r = radius.reshape(())
+    return jnp.linalg.norm(sensor_position - object_center) - r
+
+
+def predicted_contact_normal_W(
+    sensor_position: jax.Array,
+    object_center: jax.Array,
+    radius: jax.Array,
+) -> jax.Array:
+    """Unit vector from sensor toward object center, or ``0`` if ``phi > 0``."""
+    phi = signed_distance_phi(sensor_position, object_center, radius)
+    to_center = object_center - sensor_position
+    dist = jnp.linalg.norm(to_center)
+    return jnp.where(
+        phi <= 0.0,
+        to_center / jnp.maximum(dist, 1e-8),
+        jnp.zeros_like(to_center),
+    )
+
+
+def logpdf_meas_eq34(
+    measurements_t: dict[str, dict[str, jax.Array]],
+    object_center: jax.Array,
+    radius: jax.Array,
+    *,
+    sigma_n: float = MEAS_SIGMA_N,
+    alpha: float = MEAS_ALPHA,
+) -> jax.Array:
+    """``log p(m_t | x_t)`` from Eqs. 3–4 summed over robot sensors."""
+    inv_sigma_sq = jnp.reciprocal(sigma_n**2)
+    log_p = jnp.array(0.0)
+    for sensor_name, meas in measurements_t.items():
+        sensor_pos = meas["position"]
+        meas_normal = meas["contact_normal_W"]
+        phi = signed_distance_phi(sensor_pos, object_center, radius)
+        n_hat = predicted_contact_normal_W(sensor_pos, object_center, radius)
+        contact_bool = jnp.clip(jnp.round(jnp.linalg.norm(meas_normal)), 0.0, 1.0)
+        phi_pos = jnp.maximum(phi, 0.0)
+        normal_term = (
+            -0.5
+            * contact_bool
+            * inv_sigma_sq
+            * (1.0 - jnp.dot(n_hat, meas_normal))
+            - 0.5 * _LOG_2PI_SIGMA_N_SQ
+        )
+        contact_term = (contact_bool - 1.0) * alpha * phi_pos + jax.nn.softplus(
+            alpha * phi_pos
+        )
+        log_p = log_p + normal_term + contact_term
+    return log_p
+
+
+def make_sensor_measurements_trajectory(
+    object_centers: jax.Array,
+    radius: jax.Array,
+    sensor_positions: dict[str, jax.Array] | None = None,
+) -> dict[str, dict[str, jax.Array]]:
+    """``{name: {position, contact_normal_W}}`` with leaves shaped ``(n_timesteps, n_dim)``."""
+    sensors = DEFAULT_SENSOR_POSITIONS if sensor_positions is None else sensor_positions
+    n_t = object_centers.shape[0]
+    out: dict[str, dict[str, jax.Array]] = {}
+    for name, sensor_pos in sensors.items():
+        normals = jax.vmap(
+            lambda center: predicted_contact_normal_W(sensor_pos, center, radius)
+        )(object_centers)
+        out[name] = {
+            "position": jnp.broadcast_to(sensor_pos, (n_t, sensor_pos.shape[0])),
+            "contact_normal_W": normals,
+        }
+    return out
 
 
 def _make_dynamics_f_and_gradf(radius: jax.Array):
@@ -207,32 +299,33 @@ def test_dynamics_grad_one_particle_matches_eq16():
 def test_meas_grad_one_timestep_matches_eq11_12():
     """Eqs. 11–12 for one timestep against an explicit softmax sum."""
     ni = 8
-    meas_var = 0.01
-    params = {"radius": jnp.array([[0.5]])}
+    radius = jnp.array([[0.5]])
+    params = {"radius": radius}
     state = jax.random.normal(jax.random.key(11), (1, ni, 2)) * 0.05
-    measurements = jax.random.normal(jax.random.key(12), (1, 2)) * 0.05
+    ref_center = jnp.array([0.0, 1.0])
+    measurements = make_sensor_measurements_trajectory(
+        ref_center[None, :], radius
+    )
     g_dyn = _tree_broadcast_params_zeros(params, ni)
     g_dyn = jax.tree.map(
         lambda leaf: jax.random.normal(jax.random.key(13), leaf.shape) * 0.01,
         g_dyn,
     )
 
-    def logmeas(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+    def logmeas(pair: tuple[dict, jax.Array]) -> jax.Array:
         m_t, x_t = pair
-        return -0.5 * jnp.reciprocal(meas_var) * jnp.sum(jnp.square(m_t - x_t))
+        return logpdf_meas_eq34(m_t, x_t, params["radius"])
 
-    def grad_meas(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+    def grad_meas(pair: tuple[dict, jax.Array]) -> dict[str, jax.Array]:
         m_t, x_t = pair
         return jax.grad(
-            lambda p, m=m_t, x=x_t: -0.5
-            * jnp.reciprocal(meas_var)
-            * jnp.sum(jnp.square(m - x))
+            lambda p, m=m_t, x=x_t: logpdf_meas_eq34(m, x, p["radius"])
         )(params)
 
     got = _meas_grad_wrt_params_one_timestep(
         0, measurements, state, g_dyn, logmeas, grad_meas, ni
     )
-    m_t = measurements[0]
+    m_t = jax.tree.map(lambda leaf: leaf[0], measurements)
     xt = state[0]
     logits = jnp.array([logmeas((m_t, xt[i])) for i in range(ni)])
     w = jax.nn.softmax(logits)
@@ -253,17 +346,192 @@ def test_meas_grad_one_timestep_matches_eq11_12():
     )
 
 
+def _make_observed_info_svgd_2d_problem(
+    *,
+    n_timesteps: int = 4,
+    n_svgd_iters: int = 2,
+    n_particles: int = 16,
+) -> dict:
+    """Shared 2D contact setup for ``observed_info_svgd`` tests."""
+    learned = jnp.array(
+        [[0.0, 3.0], [0.0, 2.0], [0.0, 1.0], [0.0, 0.5]][:n_timesteps]
+    )
+    x_T = learned[-1:].copy()
+    initial = learned[:-1]
+    radius = jnp.array([[0.5]])
+    measurements = make_sensor_measurements_trajectory(learned, radius)
+    omega = ({"radius": radius}, x_T)
+    hp = SVGDHyperparameters(
+        n_svgd_iters=n_svgd_iters,
+        svgd_step=_DYNAMICS_SVGD_STEP,
+        init_sample_std=0.05,
+        n_particles=n_particles,
+    )
+
+    def _logdyn(pair, *, params, var):
+        x_t, x_tp1 = pair
+        return logpdf_dynamics(x_tp1, x_t, params[0]["radius"], var=var)
+
+    def _grad_dyn(pair, *, params, var):
+        return jax.grad(
+            lambda omega: logpdf_dynamics(
+                pair[1], pair[0], omega[0]["radius"], var=var
+            )
+        )(params)
+
+    def _logmeas(pair, *, params):
+        m_t, x_t = pair
+        return logpdf_meas_eq34(m_t, x_t, params[0]["radius"])
+
+    def _grad_meas(pair, *, params):
+        m_t, x_t = pair
+        return jax.grad(
+            lambda omega, m=m_t, x=x_t: logpdf_meas_eq34(
+                m, x, omega[0]["radius"]
+            )
+        )(params)
+
+    logdyn = partial(_logdyn, params=omega, var=BASEVAR)
+    grad_dyn = partial(_grad_dyn, params=omega, var=BASEVAR)
+    logmeas = partial(_logmeas, params=omega)
+    grad_meas = partial(_grad_meas, params=omega)
+
+    n_params = jax.tree_util.tree_flatten(omega)[0][0].size + x_T.size
+    return {
+        "omega": omega,
+        "measurements": measurements,
+        "initial": initial,
+        "hyperparameters": hp,
+        "logdyn": logdyn,
+        "grad_dyn": grad_dyn,
+        "logmeas": logmeas,
+        "grad_meas": grad_meas,
+        "n_params": n_params,
+    }
+
+
+def _call_observed_info_svgd(problem: dict, rng: jax.Array) -> jax.Array:
+    return observed_info_svgd(
+        problem["omega"],
+        problem["measurements"],
+        problem["initial"],
+        problem["logdyn"],
+        problem["grad_dyn"],
+        problem["logmeas"],
+        problem["grad_meas"],
+        problem["hyperparameters"],
+        rng=rng,
+    )
+
+
+def test_observed_info_svgd_jit_and_timing(capsys):
+    """``observed_info_svgd`` compiles with ``jax.jit``; report eager vs JIT timings."""
+    enable_jax_cache()
+    problem = _make_observed_info_svgd_2d_problem()
+    n_timed = 5
+    rng0 = jax.random.key(21)
+    timing_keys = jax.random.split(jax.random.key(22), n_timed)
+
+    # Compile on zeroed array inputs (same shapes/dtypes) so the timing loop cannot
+    # pay for XLA compilation. Partials/hyperparameters are identical to the timed run.
+    zero_omega = jax.tree.map(jnp.zeros_like, problem["omega"])
+    zero_measurements = jax.tree.map(jnp.zeros_like, problem["measurements"])
+    zero_initial = jnp.zeros_like(problem["initial"])
+    compile_rng = jax.random.key(0)
+
+    info_eager = _call_observed_info_svgd(problem, rng0)
+    assert info_eager.shape == (problem["n_params"], problem["n_params"])
+    assert jnp.all(jnp.isfinite(info_eager))
+
+    jitted = jax.jit(
+        observed_info_svgd,
+        static_argnames=(
+            "logpdf_dynamics",
+            "grad_logpdf_dynamics",
+            "logpdf_meas",
+            "grad_logpdf_meas",
+            "hyperparameters",
+        ),
+    )
+    jax.block_until_ready(
+        jitted(
+            zero_omega,
+            zero_measurements,
+            zero_initial,
+            problem["logdyn"],
+            problem["grad_dyn"],
+            problem["logmeas"],
+            problem["grad_meas"],
+            problem["hyperparameters"],
+            rng=compile_rng,
+        )
+    )
+
+    info_jit = jitted(
+        problem["omega"],
+        problem["measurements"],
+        problem["initial"],
+        problem["logdyn"],
+        problem["grad_dyn"],
+        problem["logmeas"],
+        problem["grad_meas"],
+        problem["hyperparameters"],
+        rng=rng0,
+    )
+    assert jnp.allclose(info_eager, info_jit, rtol=1e-5, atol=1e-6)
+
+    eager_ms: list[float] = []
+    for key in timing_keys:
+        t0 = time.perf_counter()
+        out = _call_observed_info_svgd(problem, key)
+        jax.block_until_ready(out)
+        eager_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    jit_ms: list[float] = []
+    for key in timing_keys:
+        t0 = time.perf_counter()
+        out = jitted(
+            problem["omega"],
+            problem["measurements"],
+            problem["initial"],
+            problem["logdyn"],
+            problem["grad_dyn"],
+            problem["logmeas"],
+            problem["grad_meas"],
+            problem["hyperparameters"],
+            rng=key,
+        )
+        jax.block_until_ready(out)
+        jit_ms.append((time.perf_counter() - t0) * 1000.0)
+
+    assert all(t > 0.0 for t in eager_ms + jit_ms)
+
+    lines = ["observed_info_svgd timing (ms per call):"]
+    lines.append(f"  eager: {eager_ms}")
+    lines.append(f"  jit:   {jit_ms}")
+    lines.append(
+        f"  eager mean: {sum(eager_ms) / len(eager_ms):.3f} ms, "
+        f"jit mean: {sum(jit_ms) / len(jit_ms):.3f} ms"
+    )
+    report = "\n".join(lines)
+    with capsys.disabled():
+        print(report, flush=True)
+    assert "eager:" in report
+    assert "jit:" in report
+
+
 def test_grad_meas_wrt_params_matches_pdf_equations():
     """``grad_meas_wrt_params`` is finite, JIT-safe, and self-consistent under ``vmap``."""
     enable_jax_cache()
     n_t, ni = 3, 12
-    meas_var = 0.01
     rng = jax.random.key(42)
-    k1, k2 = jax.random.split(rng, 2)
-    params = {"radius": jnp.array([[0.5]])}
+    k1, _ = jax.random.split(rng, 2)
+    radius = jnp.array([[0.5]])
+    params = {"radius": radius}
     state = jax.random.normal(k1, (n_t, ni, 2)) * 0.08
     state = state.at[-1].set(jnp.array([0.0, 0.5]))
-    measurements = jax.random.normal(k2, (n_t, 2)) * 0.05
+    traj = jnp.array([[0.0, 1.5], [0.0, 1.0], [0.0, 0.5]])
+    measurements = make_sensor_measurements_trajectory(traj, radius)
 
     def logdyn(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
         x_t, x_tp1 = pair
@@ -272,16 +540,14 @@ def test_grad_meas_wrt_params_matches_pdf_equations():
     def grad_dyn(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
         return jax.grad(lambda p: logpdf_dynamics(pair[1], pair[0], p["radius"]))(params)
 
-    def logmeas(pair: tuple[jax.Array, jax.Array]) -> jax.Array:
+    def logmeas(pair: tuple[dict, jax.Array]) -> jax.Array:
         m_t, x_t = pair
-        return -0.5 * jnp.reciprocal(meas_var) * jnp.sum(jnp.square(m_t - x_t))
+        return logpdf_meas_eq34(m_t, x_t, params["radius"])
 
-    def grad_meas(pair: tuple[jax.Array, jax.Array]) -> dict[str, jax.Array]:
+    def grad_meas(pair: tuple[dict, jax.Array]) -> dict[str, jax.Array]:
         m_t, x_t = pair
         return jax.grad(
-            lambda p, m=m_t, x=x_t: -0.5
-            * jnp.reciprocal(meas_var)
-            * jnp.sum(jnp.square(m - x))
+            lambda p, m=m_t, x=x_t: logpdf_meas_eq34(m, x, p["radius"])
         )(params)
 
     impl = grad_meas_wrt_params(

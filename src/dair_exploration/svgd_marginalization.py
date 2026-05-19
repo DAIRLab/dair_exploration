@@ -6,7 +6,7 @@ Exploration w/ Sampling and Marginalization
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +20,8 @@ class SVGDHyperparameters:
 
     n_svgd_iters: int = 12
     svgd_step: float = 0.15
-    init_sample_std: float = 0.08
+    init_sample_std: float = 0.5
+    n_particles: int = 48
 
 
 def pack_particles(particles: Any) -> jax.Array:
@@ -187,7 +188,7 @@ def _dynamics_grad_wrt_params_one_particle(
     xt_plus: Any,
     g_next: Any,
     logpdf_dynamics: Callable[[Any], jax.Array],
-    grad_logpdf_dynamics: Callable[[Any], jax.Array],
+    grad_logpdf_dynamics: Callable[[Any], Any],
     n_particles: int,
 ) -> Any:
     """Eq. 14–16: ``∇_ω log p(x_{t,i} | x_T)`` for one particle index ``i``."""
@@ -216,7 +217,7 @@ def _meas_grad_wrt_params_one_timestep(
     state_particles: Any,
     g_dyn_at_t: Any,
     logpdf_meas: Callable[[Any], jax.Array],
-    grad_logpdf_meas: Callable[[Any], jax.Array],
+    grad_logpdf_meas: Callable[[Any], Any],
     n_particles: int,
 ) -> Any:
     """Eq. 11–12: ``∇_ω log p(m_t | x_T)`` at timestep ``t``."""
@@ -247,9 +248,9 @@ def grad_meas_wrt_params(
     measurements: Any,
     state_particles: Any,
     logpdf_dynamics: Callable[[Any], jax.Array],
-    grad_logpdf_dynamics: Callable[[Any], jax.Array],
+    grad_logpdf_dynamics: Callable[[Any], Any],
     logpdf_meas: Callable[[Any], jax.Array],
-    grad_logpdf_meas: Callable[[Any], jax.Array],
+    grad_logpdf_meas: Callable[[Any], Any],
 ) -> Any:
     """
     Per-timestep ``∇_ω log p_θ(m_t | x_T)`` via Eqs. 11–12, with ``∇_ω log p_θ(x_{t,i} | x_T)``
@@ -257,6 +258,7 @@ def grad_meas_wrt_params(
 
     Dynamics callables take ``(x_t, x_{t+1})``; measurement callables take ``(m_t, x_t)``.
     All ``grad_*`` callables return a PyTree with the same structure as ``params``.
+    Use :func:`functools.partial` at the call site to bind hyperparameters or ``params``.
 
     Args:
         params: Model parameters (PyTree).
@@ -320,6 +322,166 @@ def grad_meas_wrt_params(
 
     per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
     return per_timestep
+
+
+def _make_state_dynamics_callables(
+    logpdf_dynamics: Callable[[Any], jax.Array],
+) -> tuple[
+    Callable[[jax.Array, jax.Array], jax.Array],
+    Callable[[jax.Array, jax.Array], jax.Array],
+]:
+    """``f`` and ``∇_{x_t} f`` for :func:`svgd_step` from the dynamics log-density."""
+
+    def f(x_curr: jax.Array, x_next: jax.Array) -> jax.Array:
+        return logpdf_dynamics((x_curr, x_next))
+
+    def gradf(x_curr: jax.Array, x_next: jax.Array) -> jax.Array:
+        return jax.grad(lambda xc: logpdf_dynamics((xc, x_next)))(x_curr)
+
+    return f, gradf
+
+
+def _initial_state_particles(
+    initial_state_trajectory: Any,
+    x_T: Any,
+    rng: jax.Array,
+    hyperparameters: SVGDHyperparameters,
+) -> Any:
+    """Gaussian draws around ``initial_state_trajectory``; terminal rows fixed to ``x_T``."""
+    ni = hyperparameters.n_particles
+    std = hyperparameters.init_sample_std
+    treedef = jax.tree.structure(initial_state_trajectory)
+    flat_traj = jax.tree.leaves(initial_state_trajectory)
+    flat_xT = jax.tree.leaves(x_T)
+    if len(flat_traj) != len(flat_xT):
+        raise ValueError("initial_state_trajectory and x_T must have the same PyTree structure")
+    n_interior = flat_traj[0].shape[0]
+    flat_keys = jax.random.split(rng, max(len(flat_traj), 1))
+
+    def one_leaf(traj_leaf: jax.Array, terminal_leaf: jax.Array, key: jax.Array) -> jax.Array:
+        feat_shape = traj_leaf.shape[1:]
+        noise = jax.random.normal(key, (n_interior, ni) + feat_shape) * std
+        interior = traj_leaf[:, None, ...] + noise
+        terminal_rows = jnp.broadcast_to(terminal_leaf[0], (ni,) + feat_shape)
+        return jnp.concatenate([interior, terminal_rows[None, ...]], axis=0)
+
+    flat_particles = [
+        one_leaf(traj_leaf, xT_leaf, key)
+        for traj_leaf, xT_leaf, key in zip(flat_traj, flat_xT, flat_keys)
+    ]
+    return jax.tree.unflatten(treedef, flat_particles)
+
+
+def _svgd_backward_sweep(
+    state_particles: Any,
+    hyperparameters: SVGDHyperparameters,
+    f: Callable[[jax.Array, jax.Array], jax.Array],
+    gradf: Callable[[jax.Array, jax.Array], jax.Array],
+) -> Any:
+    """One backward pass of :func:`svgd_step` from ``T-2`` down to ``0``."""
+    n_timesteps = jax.tree.leaves(state_particles)[0].shape[0]
+    if n_timesteps <= 1:
+        return state_particles
+    terminal = jax.tree.map(lambda leaf: leaf[-1], state_particles)
+    updated_tail = terminal
+    interior: list[Any] = []
+    for t in range(n_timesteps - 2, -1, -1):
+        xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
+        updated_tail = svgd_step(xt, updated_tail, f, gradf, hyperparameters)
+        interior.append(updated_tail)
+    interior.reverse()
+    stacked = jax.tree.map(
+        lambda *rows: jnp.stack(rows, axis=0),
+        *interior,
+        terminal,
+    )
+    return stacked
+
+
+def _sample_state_particles_svgd(
+    initial_state_trajectory: Any,
+    x_T: Any,
+    rng: jax.Array,
+    hyperparameters: SVGDHyperparameters,
+    logpdf_dynamics: Callable[[Any], jax.Array],
+) -> Any:
+    """Initialize around the MLE trajectory, then run ``n_svgd_iters`` backward SVGD sweeps."""
+    particles = _initial_state_particles(
+        initial_state_trajectory, x_T, rng, hyperparameters
+    )
+    f, gradf = _make_state_dynamics_callables(logpdf_dynamics)
+    for _ in range(hyperparameters.n_svgd_iters):
+        particles = _svgd_backward_sweep(particles, hyperparameters, f, gradf)
+    return particles
+
+
+def _observed_info_from_grads(grads_per_timestep: Any) -> jax.Array:
+    """Sum of outer products of flattened per-timestep parameter gradients."""
+    n_timesteps = jax.tree.leaves(grads_per_timestep)[0].shape[0]
+
+    def grad_vector_at_t(t: int) -> jax.Array:
+        g_t = jax.tree.map(lambda leaf: leaf[t], grads_per_timestep)
+        return ravel_pytree(g_t)[0]
+
+    grad_vectors = jax.vmap(grad_vector_at_t)(jnp.arange(n_timesteps))
+    return jnp.sum(jax.vmap(jnp.outer)(grad_vectors, grad_vectors), axis=0)
+
+
+def observed_info_svgd(
+    params: tuple[Any, Any],
+    measurements: Any,
+    initial_state_trajectory: Any,
+    logpdf_dynamics: Callable[[Any], jax.Array],
+    grad_logpdf_dynamics: Callable[[Any], Any],
+    logpdf_meas: Callable[[Any], jax.Array],
+    grad_logpdf_meas: Callable[[Any], Any],
+    hyperparameters: SVGDHyperparameters,
+    *,
+    rng: jax.Array,
+) -> jax.Array:
+    """
+    Observed information via SVGD marginalization (``docs/sv_observed_info.pdf``).
+
+    Parameters are ``ω = (other_params, x_T)``. Terminal state leaves ``x_T`` must have
+    shape ``(1, *state_dims)``; ``initial_state_trajectory`` has shape
+    ``(n_timesteps - 1, *state_dims)`` (MLE interior trajectory, no terminal row).
+
+    Steps: Gaussian particle init → backward :func:`svgd_step` sweeps →
+    :func:`grad_meas_wrt_params` → sum of flattened gradient outer products.
+
+    Args:
+        params: ``(other_params, x_T)`` PyTree tuple.
+        measurements: Per-timestep measurements, leaves ``(n_timesteps, ...)``.
+        initial_state_trajectory: Interior MLE states before terminal time.
+        logpdf_dynamics: ``log p(x_t | x_{t+1})``; called as ``f((x_t, x_{t+1}))``.
+        grad_logpdf_dynamics: ``∇_ω f``; called as ``g((x_t, x_{t+1}))``.
+        logpdf_meas: ``log p(m_t | x_t)``; called as ``f((m_t, x_t))``.
+        grad_logpdf_meas: ``∇_ω`` of measurement term.
+        hyperparameters: SVGD iteration count, step, init std, and particle count.
+        rng: PRNG key for initial particle noise.
+
+    Returns:
+        ``(n_params, n_params)`` observed information matrix.
+
+    Bind extra arguments (e.g. ``params=ω``) with :func:`functools.partial` before calling.
+    """
+    state_particles = _sample_state_particles_svgd(
+        initial_state_trajectory,
+        params[1],
+        rng,
+        hyperparameters,
+        logpdf_dynamics,
+    )
+    grads = grad_meas_wrt_params(
+        params,
+        measurements,
+        state_particles,
+        logpdf_dynamics,
+        grad_logpdf_dynamics,
+        logpdf_meas,
+        grad_logpdf_meas,
+    )
+    return _observed_info_from_grads(grads)
 
 
 # Public alias
