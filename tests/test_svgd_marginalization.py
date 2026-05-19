@@ -13,12 +13,14 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 import pytest
+from jax.flatten_util import ravel_pytree
 
 from dair_exploration.file_util import enable_jax_cache
 from dair_exploration.svgd_marginalization import (
     SVGDHyperparameters,
     _dynamics_grad_wrt_params_one_particle,
     _meas_grad_wrt_params_one_timestep,
+    _sample_state_particles_svgd,
     _tree_broadcast_params_zeros,
     _tree_index_leading,
     grad_meas_wrt_params,
@@ -97,6 +99,24 @@ def predicted_contact_normal_W(
         to_center / jnp.maximum(dist, 1e-8),
         jnp.zeros_like(to_center),
     )
+
+
+def sample_noisy_contact_normal_W(
+    n_hat: jax.Array,
+    key: jax.Array,
+    *,
+    sigma_n: float = MEAS_SIGMA_N,
+) -> jax.Array:
+    """Unit measured normal; ``(1 - n_hat·n_meas) ~ N(0, sigma_n^2)`` when in contact."""
+    in_contact = jnp.linalg.norm(n_hat) > 0.5
+    one_minus_dot = jax.random.normal(key) * sigma_n
+    dot_target = jnp.clip(1.0 - one_minus_dot, -1.0, 1.0)
+    delta = jnp.arccos(dot_target)
+    sign = jnp.where(jax.random.randint(key, (), 0, 2) == 0, -1.0, 1.0)
+    theta = jnp.arctan2(n_hat[1], n_hat[0])
+    theta_meas = theta + sign * delta
+    noisy = jnp.stack([jnp.cos(theta_meas), jnp.sin(theta_meas)])
+    return jnp.where(in_contact, noisy, jnp.zeros_like(n_hat))
 
 
 def logpdf_meas_eq34_one_sensor_terms(
@@ -193,15 +213,28 @@ def make_sensor_measurements_trajectory(
     object_centers: jax.Array,
     radius: jax.Array,
     sensor_positions: dict[str, jax.Array] | None = None,
+    *,
+    rng: jax.Array | None = None,
+    sigma_n: float = MEAS_SIGMA_N,
 ) -> dict[str, dict[str, jax.Array]]:
-    """``{name: {position, contact_normal_W}}`` with leaves shaped ``(n_timesteps, n_dim)``."""
+    """``{name: {position, contact_normal_W}}`` with leaves shaped ``(n_timesteps, n_dim)``.
+
+    In-contact normals are noisy: ``(1 - n_hat·n_meas) ~ N(0, sigma_n^2)``, matching
+    :func:`logpdf_meas_eq34_one_sensor_terms` (``sigma_n`` defaults to :data:`MEAS_SIGMA_N`).
+    """
     sensors = DEFAULT_SENSOR_POSITIONS if sensor_positions is None else sensor_positions
     n_t = object_centers.shape[0]
+    if rng is None:
+        rng = jax.random.key(0)
+    keys = jax.random.split(rng, len(sensors) * n_t)
     out: dict[str, dict[str, jax.Array]] = {}
-    for name, sensor_pos in sensors.items():
-        normals = jax.vmap(
+    for i, (name, sensor_pos) in enumerate(sensors.items()):
+        n_hat = jax.vmap(
             lambda center: predicted_contact_normal_W(sensor_pos, center, radius)
         )(object_centers)
+        sensor_keys = keys[i * n_t : (i + 1) * n_t]
+        noisy_normal = partial(sample_noisy_contact_normal_W, sigma_n=sigma_n)
+        normals = jax.vmap(noisy_normal)(n_hat, sensor_keys)
         out[name] = {
             "position": jnp.broadcast_to(sensor_pos, (n_t, sensor_pos.shape[0])),
             "contact_normal_W": normals,
@@ -446,6 +479,55 @@ def _offdiag_frobenius_ratio(info: jax.Array) -> float:
     return float(jnp.linalg.norm(off) / jnp.max(jnp.abs(diag)))
 
 
+def _format_info_contrib_by_meas_term(problem: dict, rng: jax.Array) -> str:
+    """Per-leaf ``g g^T`` by timestep (Eq. 12 grads); param order ``r, x, z``."""
+    particles = _sample_state_particles_svgd(
+        problem["initial"],
+        problem["omega"][1],
+        rng,
+        problem["hyperparameters"],
+        problem["logdyn"],
+    )
+    grads = grad_meas_wrt_params(
+        problem["omega"],
+        problem["measurements"],
+        particles,
+        problem["logdyn"],
+        problem["grad_dyn"],
+        problem["logmeas"],
+        problem["grad_meas"],
+    )
+    n_t = jax.tree.leaves(grads)[0].shape[0]
+    lines = ["Per-term observed-info contributions (g g^T by t):"]
+    for t in range(n_t):
+        total_t = jnp.zeros((3, 3))
+        leaf_lines: list[str] = []
+        for sensor in sorted(grads.keys()):
+            for term in ("normal", "contact"):
+                g_t = jax.tree.map(lambda leaf, tt=t: leaf[tt], grads[sensor][term])
+                vec, _ = ravel_pytree(g_t)
+                mat = jnp.outer(vec, vec)
+                total_t = total_t + mat
+                tr = float(jnp.trace(mat))
+                if tr <= 1e-6 and float(jnp.max(jnp.abs(mat))) <= 1e-6:
+                    continue
+                d = jax.device_get(jnp.diag(mat))
+                g = jax.device_get(vec.reshape(-1))
+                leaf_lines.append(
+                    f"    {sensor}/{term}: trace={tr:.4g} diag(r,x,z)={d} "
+                    f"g=({g[0]:.4g}, {g[1]:.4g}, {g[2]:.4g})"
+                )
+        tr_total = float(jnp.trace(total_t))
+        if tr_total <= 1e-6:
+            continue
+        lines.append(
+            f"  t={t}: total trace={tr_total:.4g} "
+            f"diag(r,x,z)={jax.device_get(jnp.diag(total_t))}"
+        )
+        lines.extend(leaf_lines)
+    return "\n".join(lines)
+
+
 def _make_observed_info_svgd_2d_problem(
     *,
     n_timesteps: int = 4,
@@ -453,6 +535,7 @@ def _make_observed_info_svgd_2d_problem(
     n_particles: int = 32,
     sensor_positions: dict[str, jax.Array] | None = None,
     learned_centers: jax.Array | None = None,
+    meas_rng: jax.Array | None = None,
 ) -> dict:
     """Shared 2D contact setup for ``observed_info_svgd`` tests."""
     default_learned = jnp.array(
@@ -467,7 +550,7 @@ def _make_observed_info_svgd_2d_problem(
     initial = learned[:-1]
     radius = jnp.array([[0.5]])
     measurements = make_sensor_measurements_trajectory(
-        learned, radius, sensor_positions
+        learned, radius, sensor_positions, rng=meas_rng
     )
     omega = ({"radius": radius}, x_T)
     hp = SVGDHyperparameters(
@@ -606,12 +689,14 @@ def test_observed_info_two_sensors_at_height_one(capsys):
         "left": jnp.array([-0.5, 1.0]),
         "right": jnp.array([0.5, 1.0]),
     }
+    rng = jax.random.key(33)
     problem = _make_observed_info_svgd_2d_problem(
         n_svgd_iters=50,
         n_particles=32,
         sensor_positions=sensors,
+        meas_rng=jax.random.fold_in(rng, 1),
     )
-    info = _call_observed_info_svgd(problem, jax.random.key(33))
+    info = _call_observed_info_svgd(problem, rng)
     x_T = problem["omega"][1][0]
     radius = problem["omega"][0]["radius"]
     center_at_z1 = jnp.array([0.0, 1.0])
@@ -622,13 +707,25 @@ def test_observed_info_two_sensors_at_height_one(capsys):
     diag = jnp.diag(info)
     offdiag_ratio = _offdiag_frobenius_ratio(info)
 
+    residual_z1 = {
+        name: float(
+            1.0
+            - jnp.dot(
+                predicted_contact_normal_W(pos, center_at_z1, radius),
+                problem["measurements"][name]["contact_normal_W"][2],
+            )
+        )
+        for name, pos in sensors.items()
+    }
     report = (
         "Observed information (sensors at (-0.5, 1.0) and (0.5, 1.0)):\n"
         f"{jax.device_get(info)}\n"
         f"terminal x_T = {jax.device_get(x_T)}, radius = {float(radius.reshape(()))}\n"
-        f"phi at z=1: {phi_z1}\n"
+        f"phi at z=1 (t=2 center): {phi_z1}\n"
+        f"1 - n_hat·n_meas at t=2: {residual_z1}\n"
         f"diag(r, x_T[0], x_T[1]) = {jax.device_get(diag)}\n"
-        f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}"
+        f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}\n"
+        f"{_format_info_contrib_by_meas_term(problem, rng)}"
     )
     with capsys.disabled():
         print(report, flush=True)
@@ -639,6 +736,18 @@ def test_observed_info_two_sensors_at_height_one(capsys):
     assert diag[0] > 1.0e3
     assert diag[1] > 1.0
     assert diag[2] > 1.0e3
+    info_by_meas = observed_info_svgd(
+        problem["omega"],
+        problem["measurements"],
+        problem["initial"],
+        problem["logdyn"],
+        problem["grad_dyn"],
+        problem["logmeas"],
+        problem["grad_meas"],
+        problem["hyperparameters"],
+        rng=rng,
+    )
+    assert float(info_by_meas["left"]["normal"][2, 2]) > 1.0e3
 
 
 def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
@@ -648,12 +757,14 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
         "left": jnp.array([-0.5, 0.5]),
         "right": jnp.array([0.5, 0.5]),
     }
+    rng = jax.random.key(35)
     problem = _make_observed_info_svgd_2d_problem(
         n_svgd_iters=50,
         n_particles=32,
         sensor_positions=sensors,
+        meas_rng=jax.random.fold_in(rng, 1),
     )
-    info = _call_observed_info_svgd(problem, jax.random.key(35))
+    info = _call_observed_info_svgd(problem, rng)
     x_T = problem["omega"][1][0]
     radius = problem["omega"][0]["radius"]
     phi_terminal = {
@@ -663,13 +774,25 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
     diag = jnp.diag(info)
     offdiag_ratio = _offdiag_frobenius_ratio(info)
 
+    residual_terminal = {
+        name: float(
+            1.0
+            - jnp.dot(
+                predicted_contact_normal_W(pos, x_T, radius),
+                problem["measurements"][name]["contact_normal_W"][3],
+            )
+        )
+        for name, pos in sensors.items()
+    }
     report = (
         "Observed information (sensors at (-0.5, 0.5) and (0.5, 0.5)):\n"
         f"{jax.device_get(info)}\n"
         f"terminal x_T = {jax.device_get(x_T)}, radius = {float(radius.reshape(()))}\n"
         f"phi at terminal: {phi_terminal}\n"
+        f"1 - n_hat·n_meas at t=3: {residual_terminal}\n"
         f"diag(r, x_T[0], x_T[1]) = {jax.device_get(diag)}\n"
-        f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}"
+        f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}\n"
+        f"{_format_info_contrib_by_meas_term(problem, rng)}"
     )
     with capsys.disabled():
         print(report, flush=True)
@@ -677,10 +800,23 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
     assert info.shape == (problem["n_params"], problem["n_params"])
     assert jnp.all(jnp.isfinite(info))
     assert all(phi < 1e-4 for phi in phi_terminal.values())
+    assert any(abs(r) > 1e-6 for r in residual_terminal.values())
     assert diag[0] > 1.0e4
     assert diag[1] > 1.0e4
-    assert diag[2] > 1.0
+    assert diag[2] > 1.0e5
     assert offdiag_ratio < 0.05
+    info_by_meas = observed_info_svgd(
+        problem["omega"],
+        problem["measurements"],
+        problem["initial"],
+        problem["logdyn"],
+        problem["grad_dyn"],
+        problem["logmeas"],
+        problem["grad_meas"],
+        problem["hyperparameters"],
+        rng=rng,
+    )
+    assert float(info_by_meas["left"]["normal"][2, 2]) > 1.0e5
     tangential = _make_observed_info_svgd_2d_problem(
         n_svgd_iters=50,
         n_particles=32,
