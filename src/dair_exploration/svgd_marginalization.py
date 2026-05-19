@@ -188,10 +188,14 @@ def _dynamics_grad_wrt_params_one_particle(
     xt_plus: Any,
     g_next: Any,
     logpdf_dynamics: Callable[[Any], jax.Array],
-    grad_logpdf_dynamics: Callable[[Any], Any],
+    grad_logpdf_dynamics: Callable[..., Any],
     n_particles: int,
+    *,
+    link_to_terminal: jax.Array | bool = False,
 ) -> Any:
     """Eq. 14–16: ``∇_ω log p(x_{t,i} | x_T)`` for one particle index ``i``."""
+
+    link = jnp.asarray(link_to_terminal)
 
     def logp_j(j: int) -> jax.Array:
         xt_plus_j = _tree_index_leading(xt_plus, j)
@@ -199,7 +203,7 @@ def _dynamics_grad_wrt_params_one_particle(
 
     def grad_j(j: int) -> Any:
         xt_plus_j = _tree_index_leading(xt_plus, j)
-        g_f = grad_logpdf_dynamics((xt_i, xt_plus_j))
+        g_f = grad_logpdf_dynamics((xt_i, xt_plus_j), link_to_terminal=link)
         g_dyn = _tree_index_leading(g_next, j)
         return jax.tree.map(jnp.add, g_f, g_dyn)
 
@@ -211,36 +215,76 @@ def _dynamics_grad_wrt_params_one_particle(
     return jax.tree.map(jnp.subtract, weighted, mean_next)
 
 
+def _is_params_pytree_node(node: Any) -> bool:
+    """True at ``ω`` (parameter) nodes; false for measurement-indexing dicts."""
+    if isinstance(node, jax.Array):
+        return False
+    if isinstance(node, tuple):
+        return True
+    if isinstance(node, dict):
+        return "radius" in node
+    return False
+
+
+def _add_params_pytrees(a: Any, b: Any) -> Any:
+    return jax.tree.map(jnp.add, a, b)
+
+
+def _eq12_marginalize_one_meas_leaf(
+    log_by_particle: jax.Array,
+    grad_by_particle: Any,
+    mean_dyn: Any,
+) -> Any:
+    """Eq. 11–12 for one scalar measurement component (independent softmax over particles)."""
+    weights = jax.nn.softmax(log_by_particle)
+    weighted = _softmax_weighted_sum(weights, grad_by_particle)
+    return jax.tree.map(jnp.subtract, weighted, mean_dyn)
+
+
 def _meas_grad_wrt_params_one_timestep(
     t: int,
     measurements: Any,
     state_particles: Any,
     g_dyn_at_t: Any,
-    logpdf_meas: Callable[[Any], jax.Array],
-    grad_logpdf_meas: Callable[[Any], Any],
+    logpdf_meas: Callable[[Any], Any],
+    grad_logpdf_meas: Callable[..., Any],
     n_particles: int,
+    *,
+    link_to_terminal: jax.Array | bool = False,
 ) -> Any:
-    """Eq. 11–12: ``∇_ω log p(m_t | x_T)`` at timestep ``t``."""
+    """Eq. 11–12: ``∇_ω log p(m_{t,k} | x_T)`` for each measurement leaf ``k``.
 
+    ``logpdf_meas`` returns an arbitrary PyTree of scalar log terms. ``grad_logpdf_meas``
+    returns the same PyTree structure; each leaf is a parameter PyTree whose array leaves
+  have leading shape ``(n_particles,)`` (gradient of that measurement term for each particle).
+    """
+
+    link = jnp.asarray(link_to_terminal)
     m_t = jax.tree.map(lambda leaf: leaf[t], measurements)
     xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
+    mean_dyn = _tree_mean_leading(g_dyn_at_t)
 
-    def log_meas_i(i: int) -> jax.Array:
+    def log_meas_i(i: int) -> Any:
         xt_i = _tree_index_leading(xt, i)
         return logpdf_meas((m_t, xt_i))
 
     def grad_meas_i(i: int) -> Any:
         xt_i = _tree_index_leading(xt, i)
-        g_m = grad_logpdf_meas((m_t, xt_i))
+        g_m = grad_logpdf_meas((m_t, xt_i), link_to_terminal=link)
         g_d = _tree_index_leading(g_dyn_at_t, i)
-        return jax.tree.map(jnp.add, g_m, g_d)
+        return jax.tree.map(
+            lambda g_term: _add_params_pytrees(g_term, g_d),
+            g_m,
+            is_leaf=_is_params_pytree_node,
+        )
 
-    logits = jax.vmap(log_meas_i)(jnp.arange(n_particles))
-    weights = jax.nn.softmax(logits)
-    grad_terms = jax.vmap(grad_meas_i)(jnp.arange(n_particles))
-    weighted = _softmax_weighted_sum(weights, grad_terms)
-    mean_dyn = _tree_mean_leading(g_dyn_at_t)
-    return jax.tree.map(jnp.subtract, weighted, mean_dyn)
+    log_by_particle = jax.vmap(log_meas_i)(jnp.arange(n_particles))
+    grad_by_particle = jax.vmap(grad_meas_i)(jnp.arange(n_particles))
+
+    def marginalize_leaf(log_leaf: jax.Array, grad_leaf: Any) -> Any:
+        return _eq12_marginalize_one_meas_leaf(log_leaf, grad_leaf, mean_dyn)
+
+    return jax.tree.map(marginalize_leaf, log_by_particle, grad_by_particle)
 
 
 def grad_meas_wrt_params(
@@ -266,11 +310,13 @@ def grad_meas_wrt_params(
         state_particles: Each leaf has shape ``(n_timesteps, n_particles, *)``.
         logpdf_dynamics: ``log p_θ(x_t | x_{t+1})`` (proportional to ``f_θ``).
         grad_logpdf_dynamics: ``∇_ω`` of the dynamics term w.r.t. ``params``.
-        logpdf_meas: ``log p_θ(m_t | x_t)``.
-        grad_logpdf_meas: ``∇_ω`` of the measurement term w.r.t. ``params``.
+        logpdf_meas: PyTree of scalar ``log p(m_{t,k} | x_t)`` terms (any structure).
+        grad_logpdf_meas: Same PyTree; each leaf is a ``params`` PyTree with per-particle
+            leading axis ``(n_particles,)``.
 
     Returns:
-        PyTree matching ``params``; each leaf has shape ``(n_timesteps, *leaf.shape)``.
+        PyTree matching ``logpdf_meas``; each leaf is a ``params`` PyTree whose array
+        leaves have shape ``(n_timesteps, *param_shape)``.
     """
     n_particles = jax.tree.leaves(state_particles)[0].shape[1]
     n_timesteps = jax.tree.leaves(state_particles)[0].shape[0]
@@ -280,6 +326,7 @@ def grad_meas_wrt_params(
     def backward_step(g_next: Any, t: int) -> tuple[Any, Any]:
         xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
         xt_plus = jax.tree.map(lambda leaf: leaf[t + 1], state_particles)
+        link_to_terminal = jnp.equal(t, n_timesteps - 2)
         g_t = jax.vmap(
             lambda i: _dynamics_grad_wrt_params_one_particle(
                 _tree_index_leading(xt, i),
@@ -288,6 +335,7 @@ def grad_meas_wrt_params(
                 logpdf_dynamics,
                 grad_logpdf_dynamics,
                 n_particles,
+                link_to_terminal=link_to_terminal,
             )
         )(jnp.arange(n_particles))
         return g_t, g_t
@@ -318,6 +366,7 @@ def grad_meas_wrt_params(
             logpdf_meas,
             grad_logpdf_meas,
             n_particles,
+            link_to_terminal=jnp.equal(t, n_timesteps - 1),
         )
 
     per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
@@ -415,16 +464,38 @@ def _sample_state_particles_svgd(
     return particles
 
 
-def _observed_info_from_grads(grads_per_timestep: Any) -> jax.Array:
-    """Sum of outer products of flattened per-timestep parameter gradients."""
-    n_timesteps = jax.tree.leaves(grads_per_timestep)[0].shape[0]
+def _outer_info_sum_over_time(grad_timesteps: Any) -> jax.Array:
+    """``sum_t g_t g_t^T`` for one measurement leaf (params PyTree with time axis)."""
+    n_timesteps = jax.tree.leaves(grad_timesteps)[0].shape[0]
 
-    def grad_vector_at_t(t: int) -> jax.Array:
-        g_t = jax.tree.map(lambda leaf: leaf[t], grads_per_timestep)
+    def vec_at(t: int) -> jax.Array:
+        g_t = jax.tree.map(lambda leaf: leaf[t], grad_timesteps)
         return ravel_pytree(g_t)[0]
 
-    grad_vectors = jax.vmap(grad_vector_at_t)(jnp.arange(n_timesteps))
-    return jnp.sum(jax.vmap(jnp.outer)(grad_vectors, grad_vectors), axis=0)
+    return jnp.sum(
+        jax.vmap(lambda t: jnp.outer(vec_at(t), vec_at(t)))(jnp.arange(n_timesteps)),
+        axis=0,
+    )
+
+
+def _observed_info_from_grads(grads: Any) -> Any:
+    """PyTree of ``(n_params, n_params)`` matrices matching the measurement log PyTree."""
+    return jax.tree.map(
+        _outer_info_sum_over_time,
+        grads,
+        is_leaf=_is_params_pytree_node,
+    )
+
+
+def sum_observed_info(info_by_meas: Any) -> jax.Array:
+    """Add all ``(n_params, n_params)`` leaves from :func:`_observed_info_from_grads`."""
+    leaves = jax.tree.leaves(info_by_meas)
+    if not leaves:
+        raise ValueError("observed information PyTree has no leaves")
+    total = jnp.zeros_like(leaves[0])
+    for leaf in leaves:
+        total = total + leaf
+    return total
 
 
 def observed_info_svgd(
@@ -433,12 +504,12 @@ def observed_info_svgd(
     initial_state_trajectory: Any,
     logpdf_dynamics: Callable[[Any], jax.Array],
     grad_logpdf_dynamics: Callable[[Any], Any],
-    logpdf_meas: Callable[[Any], jax.Array],
+    logpdf_meas: Callable[[Any], Any],
     grad_logpdf_meas: Callable[[Any], Any],
     hyperparameters: SVGDHyperparameters,
     *,
     rng: jax.Array,
-) -> jax.Array:
+) -> Any:
     """
     Observed information via SVGD marginalization (``docs/sv_observed_info.pdf``).
 
@@ -447,7 +518,7 @@ def observed_info_svgd(
     ``(n_timesteps - 1, *state_dims)`` (MLE interior trajectory, no terminal row).
 
     Steps: Gaussian particle init → backward :func:`svgd_step` sweeps →
-    :func:`grad_meas_wrt_params` → sum of flattened gradient outer products.
+    :func:`grad_meas_wrt_params` → per-measurement-leaf outer products (summed over time).
 
     Args:
         params: ``(other_params, x_T)`` PyTree tuple.
@@ -455,13 +526,14 @@ def observed_info_svgd(
         initial_state_trajectory: Interior MLE states before terminal time.
         logpdf_dynamics: ``log p(x_t | x_{t+1})``; called as ``f((x_t, x_{t+1}))``.
         grad_logpdf_dynamics: ``∇_ω f``; called as ``g((x_t, x_{t+1}))``.
-        logpdf_meas: ``log p(m_t | x_t)``; called as ``f((m_t, x_t))``.
-        grad_logpdf_meas: ``∇_ω`` of measurement term.
+        logpdf_meas: PyTree of scalar log-measurement terms; ``f((m_t, x_t))``.
+        grad_logpdf_meas: Same PyTree; each leaf is ``∇_ω`` of that term (per particle).
         hyperparameters: SVGD iteration count, step, init std, and particle count.
         rng: PRNG key for initial particle noise.
 
     Returns:
-        ``(n_params, n_params)`` observed information matrix.
+        PyTree matching ``logpdf_meas``; each leaf is ``(n_params, n_params)``. Use
+        :func:`sum_observed_info` for the total matrix.
 
     Bind extra arguments (e.g. ``params=ω``) with :func:`functools.partial` before calling.
     """
