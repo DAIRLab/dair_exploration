@@ -99,7 +99,7 @@ def logpdf_measurement(
                 + jnp.log(2.0 * jnp.pi * hp.meas_normal_var)
             )
         )
-        contact_term = (contact_bool - 1.0) * hp.meas_phi_alpha * jnp.square(
+        contact_term = (1.0 - contact_bool) * hp.meas_phi_alpha * jnp.square(
             phi
         ) - jax.nn.softplus(hp.meas_phi_alpha * jnp.square(phi))
         ret[sensor_name] = {"normal": normal_term, "contact": contact_term}
