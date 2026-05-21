@@ -126,9 +126,8 @@ def logpdf_meas_eq34_one_sensor_terms(
     *,
     sigma_n: float = MEAS_SIGMA_N,
     alpha: float = MEAS_ALPHA,
-    penalty: float = PENALTY,
 ) -> dict[str, jax.Array]:
-    """Per-component ``log p`` for one sensor: ``normal`` and ``contact`` (incl. penetration)."""
+    """Per-component ``log p`` for one sensor: ``normal`` and ``contact``."""
     sensor_pos = sensor_meas["position"]
     meas_normal = sensor_meas["contact_normal_W"]
     phi = signed_distance_phi(sensor_pos, object_center, radius)
@@ -146,8 +145,7 @@ def logpdf_meas_eq34_one_sensor_terms(
     contact_term = (contact_bool - 1.0) * alpha * phi_pos + jax.nn.softplus(
         alpha * phi_pos
     )
-    penetration = -penalty * jnp.abs(jnp.minimum(phi, 0.0))
-    return {"normal": normal_term, "contact": contact_term + penetration}
+    return {"normal": normal_term, "contact": contact_term}
 
 
 def logpdf_meas_eq34_one_sensor(
