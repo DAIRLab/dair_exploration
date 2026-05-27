@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
@@ -23,10 +23,10 @@ class TestSVGDHyperparameters:
     dyn_var: float = 0.01
     dyn_penalty: float = 1000.0
 
-    meas_normal_var: float = 0.1
-    meas_phi_prob1at0: float = 0.99
+    meas_normal_kappa: float = 10.0  # von Mises ~= Gaussian with variance 1/kappa
+    meas_phi_prob1at0: float = 0.7
     meas_phi_prob1at_nominal: float = 0.05
-    meas_phi_nominal: float = 0.005
+    meas_phi_nominal: float = 0.01
 
     n_meas_samples: int = 10000
     n_svgd_samples: int = 100
@@ -85,17 +85,6 @@ def _pdf_nocontact(phi: jax.Array, hp: TestSVGDHyperparameters) -> jax.Array:
     return prob_0
 
 
-def _pdf_nocontact_standard(phi: jax.Array, hp: TestSVGDHyperparameters) -> jax.Array:
-    """Probability density function of the contact boolean measurement when not in contact."""
-    meas_shift = jnp.log(-hp.meas_phi_prob1at0 / (hp.meas_phi_prob1at0 - 1.0))
-    meas_alpha = (
-        meas_shift
-        - jnp.log(-hp.meas_phi_prob1at_nominal / (hp.meas_phi_prob1at_nominal - 1.0))
-    ) / hp.meas_phi_nominal
-    prob_0 = jax.nn.sigmoid(meas_alpha * phi - meas_shift)
-    return prob_0
-
-
 def _logpdf_contact(
     phi: jax.Array | float, contact_bool: jax.Array | float, hp: TestSVGDHyperparameters
 ) -> jax.Array:
@@ -103,6 +92,16 @@ def _logpdf_contact(
     prob_0 = _pdf_nocontact(phi, hp)
     return jnp.nan_to_num(contact_bool * jnp.log(1.0 - prob_0)) + jnp.nan_to_num(
         (1.0 - contact_bool) * jnp.log(prob_0)
+    )
+
+
+def _logpdf_normal(
+    n_hat: jax.Array, meas_normal: jax.Array, hp: TestSVGDHyperparameters
+) -> jax.Array:
+    """Log probability density function of the normal measurement (von Mises)."""
+    cosn = jnp.clip(n_hat[..., None, :] @ meas_normal[..., None], -1.0, 1.0).squeeze(-1)
+    return hp.meas_normal_kappa * cosn - jnp.log(
+        2.0 * jnp.pi * jnp.i0(hp.meas_normal_kappa)
     )
 
 
@@ -130,35 +129,22 @@ def logpdf_measurement(
         meas_normal = measurements[sensor_name]["contact_normal_W"]
         to_center = x_curr - sensor_pos
         phi = jnp.linalg.norm(to_center) - params["radius"]  # Signed distance function
-        n_hat = jnp.where(
-            phi <= 0.0,
-            to_center / jnp.maximum(jnp.linalg.norm(to_center), 1e-8),
-            jnp.zeros_like(to_center),
-        )
+        n_hat = to_center / jnp.maximum(jnp.linalg.norm(to_center), 1e-8)
         contact_bool = jnp.clip(jnp.round(jnp.linalg.norm(meas_normal)), 0.0, 1.0)
-        normal_term = (
-            -0.5
-            * contact_bool
-            * (
-                jnp.reciprocal(hp.meas_normal_var) * (1.0 - jnp.dot(n_hat, meas_normal))
-                + jnp.log(2.0 * jnp.pi * hp.meas_normal_var)
-            )
-        )
-        contact_term = (1.0 - contact_bool) * hp.meas_phi_alpha * phi - jax.nn.softplus(
-            hp.meas_phi_alpha * phi
-        )
-        ret[sensor_name] = {"normal": normal_term, "contact": contact_term}
+        contact_term = _logpdf_contact(phi, contact_bool, hp)
+        normal_term = contact_bool * _logpdf_normal(n_hat, meas_normal, hp)
+        ret[sensor_name] = {"contact": contact_term, "normal": normal_term}
     return ret
 
 
-def _sample_measurements(
+def _sample_normals(
     params: dict[str, jax.Array],
     x_samples: jax.Array,
     measurements: dict[str, dict[str, jax.Array]],
     hp: TestSVGDHyperparameters,
     rng: jax.Array | None = None,
 ) -> dict[str, dict[str, jax.Array]]:
-    """Sample measurements given a set of sampled state and the parameters."""
+    """Sample normal measurements given a set of sampled state and the parameters."""
     if rng is None:
         rng = jax.random.key(0)
 
@@ -229,19 +215,11 @@ def test_expected_info_final():
     meas_final = jax.tree.map(lambda leaf: leaf[-1], env["measurements"])
     params_packed = jnp.array([params["radius"], x_final[0], x_final[1]])
 
-    measurements = _sample_measurements(params, x_final.reshape(1, -1), meas_final, hp)
+    # TODO: Sample Normals
 
-    def logmeas_packed(
-        omega: jax.Array, meas: dict[str, dict[str, jax.Array]]
-    ) -> jax.Array:
-        return logpdf_measurement({"radius": omega[0]}, omega[1:], meas, hp)
+    # TODO: Compute expected value: avg(prob_contact) * expected_value_under_normal_mixture + (1-avg(p_contact)) * value_at_0_normal
 
-    hessian_expinfo = jax.tree.map(
-        lambda leaf: -1.0 * leaf, jax.hessian(logmeas_packed)(params_packed, meas_final)
-    )
-    # c
-
-    breakpoint()
+    # TODO: Test mean hessian vs mean grad squared
 
 
 def test_plot_distributions():
@@ -285,7 +263,7 @@ def test_plot_distributions():
     )
     plt.colorbar(label="Log PDF Dynamics")
     plt.scatter(x_learned[:, 0], x_learned[:, 1], color="red", label="Learned States")
-    plt.title("Dynamics Log PDF")
+    plt.title("Dynamics Log PDF (Unnormalized)")
     plt.xlabel("x")
     plt.ylabel("y")
     plt.legend()
@@ -326,7 +304,7 @@ def test_logpdf_contact():
     assert jnp.isclose(
         1.0 - _pdf_nocontact(hp.meas_phi_nominal, hp), hp.meas_phi_prob1at_nominal
     ), "PDF at phi=meas_phi_nominal should match meas_phi_prob1at_nominal"
-    phi_values = jnp.linspace(-0.01, 0.01, 100)
+    phi_values = jnp.linspace(-0.01, 0.01, 101)
     pdf_nocontact = jax.vmap(lambda phi: _pdf_nocontact(phi, hp))(phi_values)
     pdf_contact = 1.0 - pdf_nocontact
     logpdf_contact = jax.vmap(lambda phi: _logpdf_contact(phi, 1.0, hp))(phi_values)
@@ -390,4 +368,5 @@ def test_logpdf_contact():
 
 
 if __name__ == "__main__":
+    test_plot_distributions()
     test_logpdf_contact()
