@@ -32,7 +32,7 @@ def _von_mises_fisher_sample_cos(kappa: float, num_samples: int, key: jax.Array)
     return 1 + jnp.log(uniform + (1 - uniform) * jnp.exp(-2 * kappa)) / kappa
 
 
-def _von_mises_sample(key: jax.Array, kappa: jax.typing.ArrayLike):
+def von_mises_sample(key: jax.Array, kappa: jax.typing.ArrayLike):
     """Sample from von Mises distribution with mean angle 0 and concentration kappa
 
     Jax implementation of Numpy
@@ -62,7 +62,7 @@ def _von_mises_sample(key: jax.Array, kappa: jax.typing.ArrayLike):
             return (1 + rho_val * rho_val) / (2 * rho_val)
 
         s_val = jax.lax.cond(
-            kappa < 1e-5, lambda kappa: 1.0 / kappa + kappa, s_val_from_kappa, kappa
+            kappa < jnp.array(1e-5), lambda kappa: 1.0 / kappa + kappa, s_val_from_kappa, kappa
         )
 
         def get_yw_vals(state):
@@ -82,34 +82,32 @@ def _von_mises_sample(key: jax.Array, kappa: jax.typing.ArrayLike):
             cond2 = jnp.log(y_val / v_val) + 1 - y_val >= 0
             return ~(cond1 | cond2)
 
-        breakpoint()
-
         _, _, _, _, _, w_final = jax.lax.while_loop(
             yw_cond,
             get_yw_vals,
             get_yw_vals(  # Set so yw_cond returns True for the first iteration
-                (key, kappa, s_val, jnp.array(0.0), jnp.array(1.0), jnp.array(0.0))
+                (key, kappa, s_val, jnp.array(0.0), jnp.array(100.0), jnp.array(0.0))
             ),
         )
 
         uniform_sign = 2.0 * jax.random.binomial(key, jnp.ones_like(kappa), 0.5) - 1.0
         return uniform_sign * jnp.arccos(w_final)
 
-    if kappa < 1e-8:
-        return small_kappa_uniform(key, kappa)
-    elif kappa > 1e8:
-        return large_kappa_normal(key, kappa)
-    else:
-        return mid_kappa_sample(key, kappa)
-    # return jax.lax.cond(
-    #     kappa < 1e-8,
-    #     small_kappa_uniform,
-    #     lambda key, kappa: jax.lax.cond(
-    #         kappa > 1e-8, large_kappa_normal, mid_kappa_sample, key, kappa
-    #     ),
-    #     key,
-    #     kappa,
-    # )
+    # if kappa < 1e-8:
+    #     return small_kappa_uniform(key, kappa)
+    # elif kappa > 1e8:
+    #     return large_kappa_normal(key, kappa)
+    # else:
+    #     return mid_kappa_sample(key, kappa)
+    return jax.lax.cond(
+        kappa < jnp.array(1e-8),
+        small_kappa_uniform,
+        lambda key, kappa: jax.lax.cond(
+            kappa > 1e8, large_kappa_normal, mid_kappa_sample, key, kappa
+        ),
+        key,
+        kappa,
+    )
 
 
 def von_mises_fisher_sample(
@@ -229,25 +227,25 @@ def test_vonmises_sample():
     """Test von Mises sampling in 2D"""
     kappa = 0.5  # Concentration parameter
     num_samples = 100000
-    _von_mises_sample(jax.random.key(0), kappa)
+    von_mises_sample(jax.random.key(0), kappa)
     start_time = time.time()
     print("Compilation start...", end="")
-    jax.vmap(_von_mises_sample)(
+    jax.vmap(von_mises_sample)(
         jax.random.split(jax.random.key(2), num_samples), jnp.ones(num_samples) * kappa
     )
     print(f"...Done! Time taken: {time.time() - start_time:.4f}")
     start_time = time.time()
     print("Sample start...", end="")
-    samples = jax.vmap(_von_mises_sample)(
+    samples = jax.vmap(von_mises_sample)(
         jax.random.split(jax.random.key(3), num_samples), jnp.ones(num_samples) * kappa
     )
     print(f"...Done! Time taken: {time.time() - start_time:.4f}")
     print("Numpy sample start...", end="")
     numpy_samples = np.random.vonmises(0.0, kappa, size=num_samples)
     print(f"...Done! Time taken: {time.time() - start_time:.4f}")
-    plt.hist(samples, bins=1000, density=True, alpha=0.5, label="Samples")
-    plt.hist(numpy_samples, bins=1000, density=True, alpha=0.5, label="Numpy Samples")
-    angles = jnp.linspace(-jnp.pi, jnp.pi, 1000)
+    plt.hist(samples, bins=100, density=True, alpha=0.5, label="Samples")
+    plt.hist(numpy_samples, bins=100, density=True, alpha=0.5, label="Numpy Samples")
+    angles = jnp.linspace(-jnp.pi, jnp.pi, 100)
     pdf = jnp.exp(kappa * jnp.cos(angles)) / (2 * jnp.pi * jax.scipy.special.i0(kappa))
     plt.plot(angles, pdf, label="Von Mises PDF")
     plt.legend()
