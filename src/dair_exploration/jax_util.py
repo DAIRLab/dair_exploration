@@ -92,13 +92,7 @@ def von_mises_sample(key: jax.Array, kappa: jax.typing.ArrayLike):
 
         uniform_sign = 2.0 * jax.random.binomial(key, jnp.ones_like(kappa), 0.5) - 1.0
         return uniform_sign * jnp.arccos(w_final)
-
-    # if kappa < 1e-8:
-    #     return small_kappa_uniform(key, kappa)
-    # elif kappa > 1e8:
-    #     return large_kappa_normal(key, kappa)
-    # else:
-    #     return mid_kappa_sample(key, kappa)
+    
     return jax.lax.cond(
         kappa < jnp.array(1e-8),
         small_kappa_uniform,
