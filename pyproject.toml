@@ -18,7 +18,8 @@ classifiers = [
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 dependencies = [
-  "jax[cuda13] >= 0.9.1",
+#  "jax[cuda13] >= 0.9.1",
+  "jax[cuda13] @ git+https://github.com/egordon/jax.git@add-vonmises-fisher",
   "optax",
   "mujoco-mjx @ git+https://github.com/aarushk09/mujoco.git@mjx-differentiable-distance#egg=mujoco-mjx&subdirectory=mjx",
   "gin-config", # Gin Configuration
@@ -31,7 +32,6 @@ dependencies = [
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
 
 [project.optional-dependencies]
 dev = [
