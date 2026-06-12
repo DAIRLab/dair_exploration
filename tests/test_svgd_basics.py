@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -38,7 +38,7 @@ def logpdf_dynamics(
     x_next: jax.Array,
     x_curr: jax.Array,
     hp: TestSVGDHyperparameters,
-) -> float:
+) -> jax.Array:
     """Log probability density function of the dynamics.
     Use ContactNets, min_{lamb>0} (z_final - (z_curr - SPEED + lamb))^2 + lamb*xt
     Args:
@@ -86,7 +86,7 @@ def _pdf_nocontact(phi: jax.Array, hp: TestSVGDHyperparameters) -> jax.Array:
 
 
 def _logpdf_contact(
-    phi: jax.Array | float, contact_bool: jax.Array | float, hp: TestSVGDHyperparameters
+    phi: jax.Array, contact_bool: jax.Array, hp: TestSVGDHyperparameters
 ) -> jax.Array:
     """Log probability density function of the contact boolean measurement."""
     prob_0 = _pdf_nocontact(phi, hp)
@@ -111,7 +111,7 @@ def logpdf_measurement(
     x_curr: jax.Array,
     measurements: dict[str, dict[str, jax.Array]],
     hp: TestSVGDHyperparameters,
-) -> jax.Array:
+) -> Any:
     """Log probability density function of the measurements.
 
     Args:
