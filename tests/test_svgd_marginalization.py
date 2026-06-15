@@ -544,13 +544,13 @@ def _make_observed_info_svgd_2d_problem(
         raise ValueError(
             f"learned_centers has {learned.shape[0]} rows but n_timesteps={n_timesteps}"
         )
-    x_T = learned[-1:].copy()
+    x_final = learned[-1:].copy()
     initial = learned[:-1]
     radius = jnp.array([[0.5]])
     measurements = make_sensor_measurements_trajectory(
         learned, radius, sensor_positions, rng=meas_rng
     )
-    omega = ({"radius": radius}, x_T)
+    omega = ({"radius": radius}, x_final)
     hp = SVGDHyperparameters(
         n_svgd_iters=n_svgd_iters,
         svgd_step=_DYNAMICS_SVGD_STEP,
@@ -587,7 +587,7 @@ def _make_observed_info_svgd_2d_problem(
     logmeas = partial(_logmeas, params=omega)
     grad_meas = partial(_grad_meas, params=omega)
 
-    n_params = jax.tree_util.tree_flatten(omega)[0][0].size + x_T.size
+    n_params = jax.tree_util.tree_flatten(omega)[0][0].size + x_final.size
     return {
         "omega": omega,
         "measurements": measurements,
@@ -649,11 +649,11 @@ def test_observed_info_tangential_sensor_constrains_z_and_x_minus_r(capsys):
         sensor_positions=tangential_sensor,
     )
     info = _call_observed_info_svgd(problem, jax.random.key(32))
-    x_T = problem["omega"][1][0]
+    x_final = problem["omega"][1][0]
     radius = float(problem["omega"][0]["radius"].reshape(()))
     phi_terminal = float(
         signed_distance_phi(
-            tangential_sensor["finger"], x_T, problem["omega"][0]["radius"]
+            tangential_sensor["finger"], x_final, problem["omega"][0]["radius"]
         )
     )
 
@@ -664,8 +664,8 @@ def test_observed_info_tangential_sensor_constrains_z_and_x_minus_r(capsys):
     report = (
         "Observed information (sensor at (0.5, 0.5), tangential at terminal):\n"
         f"{jax.device_get(info)}\n"
-        f"terminal x_T = {jax.device_get(x_T)}, radius = {radius}, "
-        f"phi_terminal = {phi_terminal:.6f}, x_T[0]-r = {float(x_T[0] - radius):.6f}\n"
+        f"terminal x_final = {jax.device_get(x_final)}, radius = {radius}, "
+        f"phi_terminal = {phi_terminal:.6f}, x_final[0]-r = {float(x_final[0] - radius):.6f}\n"
         f"I_zz = {float(info[2, 2]):.6e}, quad form on x-r direction = {quad_x_minus_r:.6e}"
     )
     with capsys.disabled():
@@ -695,7 +695,7 @@ def test_observed_info_two_sensors_at_height_one(capsys):
         meas_rng=jax.random.fold_in(rng, 1),
     )
     info = _call_observed_info_svgd(problem, rng)
-    x_T = problem["omega"][1][0]
+    x_final = problem["omega"][1][0]
     radius = problem["omega"][0]["radius"]
     center_at_z1 = jnp.array([0.0, 1.0])
     phi_z1 = {
@@ -718,10 +718,10 @@ def test_observed_info_two_sensors_at_height_one(capsys):
     report = (
         "Observed information (sensors at (-0.5, 1.0) and (0.5, 1.0)):\n"
         f"{jax.device_get(info)}\n"
-        f"terminal x_T = {jax.device_get(x_T)}, radius = {float(radius.reshape(()))}\n"
+        f"terminal x_final = {jax.device_get(x_final)}, radius = {float(radius.reshape(()))}\n"
         f"phi at z=1 (t=2 center): {phi_z1}\n"
         f"1 - n_hat·n_meas at t=2: {residual_z1}\n"
-        f"diag(r, x_T[0], x_T[1]) = {jax.device_get(diag)}\n"
+        f"diag(r, x_final[0], x_final[1]) = {jax.device_get(diag)}\n"
         f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}\n"
         f"{_format_info_contrib_by_meas_term(problem, rng)}"
     )
@@ -763,10 +763,10 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
         meas_rng=jax.random.fold_in(rng, 1),
     )
     info = _call_observed_info_svgd(problem, rng)
-    x_T = problem["omega"][1][0]
+    x_final = problem["omega"][1][0]
     radius = problem["omega"][0]["radius"]
     phi_terminal = {
-        name: float(signed_distance_phi(pos, x_T, radius))
+        name: float(signed_distance_phi(pos, x_final, radius))
         for name, pos in sensors.items()
     }
     diag = jnp.diag(info)
@@ -776,7 +776,7 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
         name: float(
             1.0
             - jnp.dot(
-                predicted_contact_normal_W(pos, x_T, radius),
+                predicted_contact_normal_W(pos, x_final, radius),
                 problem["measurements"][name]["contact_normal_W"][3],
             )
         )
@@ -785,10 +785,10 @@ def test_observed_info_two_sensors_at_terminal_height_near_diagonal(capsys):
     report = (
         "Observed information (sensors at (-0.5, 0.5) and (0.5, 0.5)):\n"
         f"{jax.device_get(info)}\n"
-        f"terminal x_T = {jax.device_get(x_T)}, radius = {float(radius.reshape(()))}\n"
+        f"terminal x_final = {jax.device_get(x_final)}, radius = {float(radius.reshape(()))}\n"
         f"phi at terminal: {phi_terminal}\n"
         f"1 - n_hat·n_meas at t=3: {residual_terminal}\n"
-        f"diag(r, x_T[0], x_T[1]) = {jax.device_get(diag)}\n"
+        f"diag(r, x_final[0], x_final[1]) = {jax.device_get(diag)}\n"
         f"off-diagonal Frobenius / max|diag| = {offdiag_ratio:.4f}\n"
         f"{_format_info_contrib_by_meas_term(problem, rng)}"
     )

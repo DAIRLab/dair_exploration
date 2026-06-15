@@ -15,6 +15,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import scipy
 
+from dair_exploration.svgd_marginalization import (
+    grad_meas_wrt_params,
+    sample_state_particles_svgd,
+    SVGDHyperparameters,
+)
+
 
 ### Define Environment
 @dataclass(frozen=True)
@@ -31,7 +37,6 @@ class TestSVGDHyperparameters:
     meas_phi_nominal: float = 0.01
 
     n_meas_samples: int = 10000
-    n_svgd_samples: int = 100
 
 
 @partial(jax.jit, static_argnames=["hp"])
@@ -255,7 +260,8 @@ def test_expected_info_final():
     for sensor_name in meas_final:
         zero_meas[sensor_name]["position"] = meas_final[sensor_name]["position"]
 
-    # Compute expected value: (p_nocontact) * value_at_0 + (1-p_nocontact) * expected_value_under_vmf
+    # Compute expected value:
+    #               (p_nocontact) * value_at_0 + (1-p_nocontact) * expected_value_under_vmf
     # NOTE: don't forget to square *then* take the mean
     print("Calculating expected gradients and Hessians...", flush=True)
     grad_logpdf = jax.grad(logpdf_meas_fn)
@@ -279,12 +285,140 @@ def test_expected_info_final():
     )
 
     print("Expected gradient (should be near-0):", expected_grad)
-    print("Expected negative Hessian (know r-x a lot and z a little):\n", expected_neg_hess)
-    print("Expected squared gradient(know r-x a lot and z a little):\n", expected_grad_sq)
+    print(
+        "Expected negative Hessian (know r-x a lot and z a little):\n",
+        expected_neg_hess,
+    )
+    print(
+        "Expected squared gradient(know r-x a lot and z a little):\n", expected_grad_sq
+    )
     print("Asserting crude equality...", end="")
-    assert jnp.allclose(expected_grad, jnp.zeros_like(expected_grad), atol=1e-2, rtol=1e-2)
+    assert jnp.allclose(
+        expected_grad, jnp.zeros_like(expected_grad), atol=1e-2, rtol=1e-2
+    )
     assert jnp.allclose(expected_neg_hess, expected_grad_sq, atol=1e0, rtol=1e0)
     print("Success!")
+
+    print("Calculating expected gradients and Hessians...", flush=True)
+    meas_random = jax.tree.map(lambda leaf: leaf[1], meas_samples)
+    grad_obs = grad_logpdf(params_packed, meas_random)
+    hess_obs = hess_logpdf(params_packed, meas_random)
+    print("Observed gradient:", grad_obs)
+    print("Observed gradient squared:\n", jnp.outer(grad_obs, grad_obs))
+    print("Observed negative Hessian:\n", -hess_obs)
+
+    # NOTE: observed info has high variance, especially for the gradient squared
+
+
+def test_expected_info_tminus1():
+    """Test the expected information from the measurements at time t-1 (top left)"""
+    hp = TestSVGDHyperparameters()
+    env = _create_env()
+    params = env["params"]
+    x_learned = env["x_learned"]
+    omega = (params, x_learned[-1:])
+    x_grid = jnp.linspace(-2.0, 2.0, 1000)
+    y_grid = jnp.linspace(0.0, 2.0, 1000)
+    xx, yy = jnp.meshgrid(x_grid, y_grid)
+    grid_points = jnp.stack([xx.flatten(), yy.flatten()], axis=-1)
+
+    # Evaluate logpdfs on the grid
+    logpdf_dyn = jax.vmap(lambda x: logpdf_dynamics(params, x_learned[-1], x, hp))(
+        grid_points
+    )
+    logpdf_dyn = logpdf_dyn.reshape(xx.shape)
+
+    # SVGD sample x's at time t-1
+    def _logdyn(pair, *, omega, hp):
+        x_t, x_tp1 = pair
+        return logpdf_dynamics(omega[0], x_tp1, x_t, hp)
+
+    _logdyn_partial = partial(_logdyn, omega=omega, hp=hp)
+
+    def _grad_dyn(pair, *, omega, hp, link_to_terminal=False):
+        x_t, x_tp1 = pair
+        link = jnp.asarray(link_to_terminal)
+
+        def loss(omega):
+            x_next = jax.lax.select(link, omega[1][0], x_tp1)
+            return logpdf_dynamics(omega[0], x_next, x_t, hp)
+        return jax.grad(loss)(omega)
+
+    _grad_dyn_partial = partial(_grad_dyn, omega=omega, hp=hp)
+
+    def _logmeas(pair, *, omega, hp):
+        m_t, x_t = pair
+        return logpdf_measurement(omega[0], x_t, m_t, hp)
+
+    _logmeas_partial = partial(_logmeas, omega=omega, hp=hp)
+
+    def _grad_meas(pair, *, omega, hp, link_to_terminal=False):
+        m_t, x_t = pair
+        link = jnp.asarray(link_to_terminal)
+
+        def log_all(omega: Any) -> dict[str, dict[str, jax.Array]]:
+            object_x = jax.lax.select(link, omega[1][0], x_t)
+            return logpdf_measurement(omega[0], object_x, m_t, hp)
+
+        return jax.jacfwd(log_all)(omega)
+
+    _grad_meas_partial = partial(_grad_meas, omega=omega, hp=hp)
+
+    svgd_hp = SVGDHyperparameters(
+        n_particles=400, n_svgd_iters=400, svgd_step=1e-2, init_sample_std=5e-1
+    )
+
+    x_particles = sample_state_particles_svgd(
+        env["x_learned"][:-1],
+        env["x_learned"][-1:],
+        jax.random.key(0),
+        svgd_hp,
+        _logdyn_partial,
+    )
+
+    plt.figure()
+    plt.contourf(
+        xx,
+        yy,
+        logpdf_dyn,
+        levels=np.linspace(-100, 0.0, 50),
+        extend="min",
+        cmap="viridis",
+    )
+    plt.colorbar(label="Log PDF Dynamics")
+    plt.scatter(x_learned[:, 0], x_learned[:, 1], color="red", label="Learned States")
+    plt.scatter(
+        x_particles[0, :, 0], x_particles[0, :, 1], color="blue", label="SVGD Particles"
+    )
+    for idx in range(len(x_learned)):
+        circle = patches.Circle(
+            (x_learned[idx, 0], x_learned[idx, 1]),
+            params["radius"],
+            color="red",
+            fill=False,
+        )
+        plt.gca().add_patch(circle)
+    plt.title("Dynamics Log PDF (Unnormalized)")
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.legend()
+    plt.show()
+
+    # TODO: Compute the measurement likelihood gradients for t=T-1
+    measurements = env["measurements"]
+    zero_meas = jax.tree.map(jnp.zeros_like, measurements)
+    for sensor_name, sensor_measurement in measurements.items():
+        zero_meas[sensor_name]["position"] = sensor_measurement["position"]
+    grads = grad_meas_wrt_params(
+        omega,
+        zero_meas,
+        x_particles,
+        _logdyn_partial,
+        _grad_dyn_partial,
+        _logmeas_partial,
+        _grad_meas_partial,
+    )
+    breakpoint()
 
 
 def test_plot_distributions():
@@ -450,4 +584,4 @@ def test_logpdf_contact():
 
 
 if __name__ == "__main__":
-    test_expected_info_final()
+    test_expected_info_tminus1()

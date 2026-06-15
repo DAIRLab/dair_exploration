@@ -4,6 +4,7 @@
 Exploration w/ Sampling and Marginalization
 """
 
+from functools import partial
 import math
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -11,6 +12,7 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 from jax.flatten_util import ravel_pytree
+from jax.typing import ArrayLike
 import numpy as np
 
 
@@ -19,7 +21,7 @@ class SVGDHyperparameters:
     """Extra knobs for SVGD sampling + observed-info Monte Carlo size."""
 
     n_svgd_iters: int = 12
-    svgd_step: float = 0.15
+    svgd_step: float = 1e-2
     init_sample_std: float = 0.5
     n_particles: int = 48
 
@@ -97,20 +99,23 @@ def _pairwise_squared_and_bandwidth(x_packed: jax.Array) -> tuple[jax.Array, jax
     return pairwise_l2_squared, h_sq
 
 
-def _rbf_kernel_position_grads(kmat: jax.Array, x_packed: jax.Array, h_sq: jax.Array) -> jax.Array:
+def _rbf_kernel_position_grads(
+    kmat: jax.Array, x_packed: jax.Array, h_sq: jax.Array
+) -> jax.Array:
     """Row ``i`` is ``sum_j \\nabla_{x_i} K(x_j, x_i)``; shape ``(n_particles, feat_dim)``."""
     ni = x_packed.shape[0]
 
-    def kernel_grad_row(i: int) -> jax.Array:
-        def k_ij(j: int) -> jax.Array:
+    def kernel_grad_row(i: ArrayLike) -> jax.Array:
+        def k_ij(j: ArrayLike) -> jax.Array:
             diff = x_packed[j] - x_packed[i]
-            return kmat[j, i] * diff / h_sq
+            return 2.0 * kmat[j, i] * diff / h_sq
 
         return jax.vmap(k_ij)(jnp.arange(ni)).sum(axis=0)
 
     return jax.vmap(kernel_grad_row)(jnp.arange(ni))
 
 
+@partial(jax.jit, static_argnums=(2, 3, 4))
 def _svgd_step(
     x_particles: Any,
     x_plus_particles: Any,
@@ -150,11 +155,16 @@ def _svgd_step(
 
     grad_log_p = jax.vmap(grad_log_p_row)(x_packed)
     pairwise_l2_squared, h_sq = _pairwise_squared_and_bandwidth(x_packed)
-    kernels = jnp.exp(-pairwise_l2_squared / (2.0 * jax.lax.stop_gradient(h_sq)))
-    kernel_summands = _rbf_kernel_position_grads(kernels, x_packed, jax.lax.stop_gradient(h_sq))
-    drive = (kernels @ grad_log_p + jnp.sum(kernel_summands, axis=0)) / float(n_particles)
+    kernels = jnp.exp(-pairwise_l2_squared / (jax.lax.stop_gradient(h_sq)))
+    kernel_summands = _rbf_kernel_position_grads(
+        kernels, x_packed, jax.lax.stop_gradient(h_sq)
+    )
+    drive = (kernels @ grad_log_p + jnp.sum(kernel_summands, axis=0)) / float(
+        n_particles
+    )
     updated_packed = x_packed + hyperparameters.svgd_step * drive
     return unpack_particles(updated_packed, x_particles)
+
 
 def _tree_broadcast_params_zeros(params: Any, n_particles: int) -> Any:
     """Zero gradients with leading particle axis ``(n_particles, *param_shape)``."""
@@ -197,14 +207,14 @@ def _dynamics_grad_wrt_params_one_particle(
 
     link = jnp.asarray(link_to_terminal)
 
-    def logp_j(j: int) -> jax.Array:
-        xt_plus_j = _tree_index_leading(xt_plus, j)
+    def logp_j(j: ArrayLike) -> jax.Array:
+        xt_plus_j = _tree_index_leading(xt_plus, jnp.int32(j))
         return logpdf_dynamics((xt_i, xt_plus_j))
 
-    def grad_j(j: int) -> Any:
-        xt_plus_j = _tree_index_leading(xt_plus, j)
+    def grad_j(j: ArrayLike) -> Any:
+        xt_plus_j = _tree_index_leading(xt_plus, jnp.int32(j))
         g_f = grad_logpdf_dynamics((xt_i, xt_plus_j), link_to_terminal=link)
-        g_dyn = _tree_index_leading(g_next, j)
+        g_dyn = _tree_index_leading(g_next, jnp.int32(j))
         return jax.tree.map(jnp.add, g_f, g_dyn)
 
     logits = jax.vmap(logp_j)(jnp.arange(n_particles))
@@ -254,9 +264,9 @@ def _meas_grad_wrt_params_one_timestep(
 ) -> Any:
     """Eq. 11–12: ``∇_ω log p(m_{t,k} | x_T)`` for each measurement leaf ``k``.
 
-    ``logpdf_meas`` returns an arbitrary PyTree of scalar log terms. ``grad_logpdf_meas``
-    returns the same PyTree structure; each leaf is a parameter PyTree whose array leaves
-  have leading shape ``(n_particles,)`` (gradient of that measurement term for each particle).
+      ``logpdf_meas`` returns an arbitrary PyTree of scalar log terms. ``grad_logpdf_meas``
+      returns the same PyTree structure; each leaf is a parameter PyTree whose array leaves
+    have leading shape ``(n_particles,)`` (gradient of that measurement term for each particle).
     """
 
     link = jnp.asarray(link_to_terminal)
@@ -264,14 +274,14 @@ def _meas_grad_wrt_params_one_timestep(
     xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
     mean_dyn = _tree_mean_leading(g_dyn_at_t)
 
-    def log_meas_i(i: int) -> Any:
-        xt_i = _tree_index_leading(xt, i)
+    def log_meas_i(i: ArrayLike) -> Any:
+        xt_i = _tree_index_leading(xt, jnp.int32(i))
         return logpdf_meas((m_t, xt_i))
 
-    def grad_meas_i(i: int) -> Any:
-        xt_i = _tree_index_leading(xt, i)
+    def grad_meas_i(i: ArrayLike) -> Any:
+        xt_i = _tree_index_leading(xt, jnp.int32(i))
         g_m = grad_logpdf_meas((m_t, xt_i), link_to_terminal=link)
-        g_d = _tree_index_leading(g_dyn_at_t, i)
+        g_d = _tree_index_leading(g_dyn_at_t, jnp.int32(i))
         return jax.tree.map(
             lambda g_term: _add_params_pytrees(g_term, g_d),
             g_m,
@@ -323,7 +333,8 @@ def grad_meas_wrt_params(
 
     g_terminal = _tree_broadcast_params_zeros(params, n_particles)
 
-    def backward_step(g_next: Any, t: int) -> tuple[Any, Any]:
+    def backward_step(g_next: Any, t: ArrayLike) -> tuple[Any, Any]:
+        t = jnp.int32(t)
         xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
         xt_plus = jax.tree.map(lambda leaf: leaf[t + 1], state_particles)
         link_to_terminal = jnp.equal(t, n_timesteps - 2)
@@ -356,17 +367,17 @@ def grad_meas_wrt_params(
             g_terminal_row,
         )
 
-    def meas_grad_at_t(t: int) -> Any:
-        g_dyn_t = jax.tree.map(lambda leaf: leaf[t], g_by_timestep)
+    def meas_grad_at_t(t: ArrayLike) -> Any:
+        g_dyn_t = jax.tree.map(lambda leaf: leaf[jnp.int32(t)], g_by_timestep)
         return _meas_grad_wrt_params_one_timestep(
-            t,
+            jnp.int32(t),
             measurements,
             state_particles,
             g_dyn_t,
             logpdf_meas,
             grad_logpdf_meas,
             n_particles,
-            link_to_terminal=jnp.equal(t, n_timesteps - 1),
+            link_to_terminal=jnp.equal(jnp.int32(t), n_timesteps - 1),
         )
 
     per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
@@ -392,7 +403,7 @@ def _make_state_dynamics_callables(
 
 def _initial_state_particles(
     initial_state_trajectory: Any,
-    x_T: Any,
+    x_final: Any,
     rng: jax.Array,
     hyperparameters: SVGDHyperparameters,
 ) -> Any:
@@ -401,13 +412,17 @@ def _initial_state_particles(
     std = hyperparameters.init_sample_std
     treedef = jax.tree.structure(initial_state_trajectory)
     flat_traj = jax.tree.leaves(initial_state_trajectory)
-    flat_xT = jax.tree.leaves(x_T)
-    if len(flat_traj) != len(flat_xT):
-        raise ValueError("initial_state_trajectory and x_T must have the same PyTree structure")
+    flat_x_final = jax.tree.leaves(x_final)
+    if len(flat_traj) != len(flat_x_final):
+        raise ValueError(
+            "initial_state_trajectory and x_final must have the same PyTree structure"
+        )
     n_interior = flat_traj[0].shape[0]
     flat_keys = jax.random.split(rng, max(len(flat_traj), 1))
 
-    def one_leaf(traj_leaf: jax.Array, terminal_leaf: jax.Array, key: jax.Array) -> jax.Array:
+    def one_leaf(
+        traj_leaf: jax.Array, terminal_leaf: jax.Array, key: jax.Array
+    ) -> jax.Array:
         feat_shape = traj_leaf.shape[1:]
         noise = jax.random.normal(key, (n_interior, ni) + feat_shape) * std
         interior = traj_leaf[:, None, ...] + noise
@@ -415,8 +430,8 @@ def _initial_state_particles(
         return jnp.concatenate([interior, terminal_rows[None, ...]], axis=0)
 
     flat_particles = [
-        one_leaf(traj_leaf, xT_leaf, key)
-        for traj_leaf, xT_leaf, key in zip(flat_traj, flat_xT, flat_keys)
+        one_leaf(traj_leaf, x_final_leaf, key)
+        for traj_leaf, x_final_leaf, key in zip(flat_traj, flat_x_final, flat_keys)
     ]
     return jax.tree.unflatten(treedef, flat_particles)
 
@@ -435,7 +450,8 @@ def _svgd_backward_sweep(
     updated_tail = terminal
     interior: list[Any] = []
     for t in range(n_timesteps - 2, -1, -1):
-        xt = jax.tree.map(lambda leaf: leaf[t], state_particles)
+        # pylint: disable=cell-var-from-loop
+        xt = jax.tree.map(lambda leaf: leaf[jnp.int32(t)], state_particles)
         updated_tail = svgd_step(xt, updated_tail, f, gradf, hyperparameters)
         interior.append(updated_tail)
     interior.reverse()
@@ -449,20 +465,19 @@ def _svgd_backward_sweep(
 
 def _sample_state_particles_svgd(
     initial_state_trajectory: Any,
-    x_T: Any,
+    x_final: Any,
     rng: jax.Array,
     hyperparameters: SVGDHyperparameters,
     logpdf_dynamics: Callable[[Any], jax.Array],
 ) -> Any:
     """Initialize around the MLE trajectory, then run ``n_svgd_iters`` backward SVGD sweeps."""
     particles = _initial_state_particles(
-        initial_state_trajectory, x_T, rng, hyperparameters
+        initial_state_trajectory, x_final, rng, hyperparameters
     )
     f, gradf = _make_state_dynamics_callables(logpdf_dynamics)
     for _ in range(hyperparameters.n_svgd_iters):
         particles = _svgd_backward_sweep(particles, hyperparameters, f, gradf)
     return particles
-
 
 def _outer_info_sum_over_time(grad_timesteps: Any) -> jax.Array:
     """``sum_t g_t g_t^T`` for one measurement leaf (params PyTree with time axis)."""
@@ -558,5 +573,4 @@ def observed_info_svgd(
 
 # Public alias
 svgd_step = _svgd_step
-
-
+sample_state_particles_svgd = _sample_state_particles_svgd
