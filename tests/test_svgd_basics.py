@@ -12,6 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import scipy
 
 
 ### Define Environment
@@ -23,7 +25,7 @@ class TestSVGDHyperparameters:
     dyn_var: float = 0.01
     dyn_penalty: float = 1000.0
 
-    meas_normal_kappa: float = 10.0  # von Mises ~= Gaussian with variance 1/kappa
+    meas_normal_kappa: float = 15.0  # von Mises ~= Gaussian with variance 1/kappa
     meas_phi_prob1at0: float = 0.7
     meas_phi_prob1at_nominal: float = 0.05
     meas_phi_nominal: float = 0.01
@@ -71,9 +73,10 @@ grad_logpdf_dynamics = jax.jit(jax.grad(logpdf_dynamics))
 grad_logpdf_dynamics_with_xT = jax.jit(jax.grad(logpdf_dynamics, argnums=(0, 1)))
 
 
+@partial(jax.jit, static_argnames=["hp"])
 def _pdf_nocontact(phi: jax.Array, hp: TestSVGDHyperparameters) -> jax.Array:
     """Probability density function of the contact boolean measurement when not in contact."""
-    # See https://www.wolframalpha.com/input?i=solve+2*%28a*sigmoid%28x*c%5E2%29+-+%28a-0.5%29%29%3D1-b+for+x
+    # https://www.wolframalpha.com/input?i=solve+2*%28a*sigmoid%28x*c%5E2%29+-+%28a-0.5%29%29%3D1-b+for+x
     meas_phi_alpha = jnp.log(
         2 * hp.meas_phi_prob1at0 / hp.meas_phi_prob1at_nominal - 1
     ) / jnp.abs(hp.meas_phi_nominal)
@@ -85,6 +88,7 @@ def _pdf_nocontact(phi: jax.Array, hp: TestSVGDHyperparameters) -> jax.Array:
     return prob_0
 
 
+@partial(jax.jit, static_argnames=["hp"])
 def _logpdf_contact(
     phi: jax.Array, contact_bool: jax.Array, hp: TestSVGDHyperparameters
 ) -> jax.Array:
@@ -95,14 +99,50 @@ def _logpdf_contact(
     )
 
 
+@partial(jax.jit, static_argnames=["hp"])
 def _logpdf_normal(
     n_hat: jax.Array, meas_normal: jax.Array, hp: TestSVGDHyperparameters
 ) -> jax.Array:
-    """Log probability density function of the normal measurement (von Mises)."""
-    cosn = jnp.clip(n_hat[..., None, :] @ meas_normal[..., None], -1.0, 1.0).squeeze(-1)
-    return hp.meas_normal_kappa * cosn - jnp.log(
-        2.0 * jnp.pi * jnp.i0(hp.meas_normal_kappa)
+    """Log probability density function of the normal measurement (von Mises-Fisher)."""
+    n_hat_normal = n_hat / jnp.maximum(
+        jnp.linalg.norm(n_hat, axis=-1, keepdims=True), 1e-8
     )
+    meas_normal = meas_normal / jnp.maximum(
+        jnp.linalg.norm(meas_normal, axis=-1, keepdims=True), 1e-8
+    )
+    ndim = n_hat_normal.shape[-1]
+    assert ndim == meas_normal.shape[-1], "Incompatible dimensions"
+    cosn = (
+        jnp.clip(n_hat_normal[..., None, :] @ meas_normal[..., None], -1.0, 1.0)
+        .squeeze(-1)
+        .squeeze(-1)
+    )
+    return (
+        hp.meas_normal_kappa * cosn
+        + (ndim / 2.0 - 1) * jnp.log(hp.meas_normal_kappa)
+        - jnp.log(
+            (2.0 * jnp.pi) ** (ndim / 2.0)
+            * scipy.special.iv(ndim / 2.0 - 1, hp.meas_normal_kappa)
+        )
+    )
+
+
+@partial(jax.jit, static_argnames=["hp"])
+def p_nocontact(
+    params: dict[str, jax.Array],
+    x_curr: jax.Array,
+    measurements: dict[str, dict[str, jax.Array]],
+    hp: TestSVGDHyperparameters,
+) -> dict[str, jax.Array]:
+    """Probability of no contact."""
+    # Placeholder for the actual implementation
+    ret = {}
+    for sensor_name in measurements:
+        sensor_pos = measurements[sensor_name]["position"]
+        to_center = x_curr - sensor_pos
+        phi = jnp.linalg.norm(to_center) - params["radius"]  # Signed distance function
+        ret[sensor_name] = _pdf_nocontact(phi, hp)
+    return ret
 
 
 @partial(jax.jit, static_argnames=["hp"])
@@ -133,50 +173,40 @@ def logpdf_measurement(
         contact_bool = jnp.clip(jnp.round(jnp.linalg.norm(meas_normal)), 0.0, 1.0)
         contact_term = _logpdf_contact(phi, contact_bool, hp)
         normal_term = contact_bool * _logpdf_normal(n_hat, meas_normal, hp)
-        ret[sensor_name] = {"contact": contact_term, "normal": normal_term}
+        ret[sensor_name] = contact_term + normal_term
     return ret
 
 
 def _sample_normals(
-    params: dict[str, jax.Array],
-    x_samples: jax.Array,
+    x_curr: jax.Array,
     measurements: dict[str, dict[str, jax.Array]],
     hp: TestSVGDHyperparameters,
-    rng: jax.Array | None = None,
 ) -> dict[str, dict[str, jax.Array]]:
-    """Sample normal measurements given a set of sampled state and the parameters."""
-    if rng is None:
-        rng = jax.random.key(0)
+    """Sample normals from the measurement distribution.
 
-    n_x_samples = x_samples.shape[0]
+    Args:
+        params: Parameters of the dynamics model.
+        x_curr: Current state.
+        measurements: Dictionary of measurements
+            ("object_name" -> ["position", "contact_normal"] (or 0 if not in contact))
+        hp: Hyperparameters
+
+    Returns:
+        Dictionary of sampled normals for each sensor.
+    """
     ret = {}
     for sensor_name in measurements:
         sensor_pos = measurements[sensor_name]["position"]
-        to_center = x_samples - sensor_pos
-        n_hat = jnp.mean(
-            to_center
-            / jnp.maximum(jnp.linalg.norm(to_center, axis=-1, keepdims=True), 1e-8),
-            axis=0,
-        )
-        n_hat = n_hat / jnp.maximum(
-            jnp.linalg.norm(n_hat), 1e-8
-        )  # Normalize to unit vector
-        normal_noise = jax.random.multivariate_normal(
-            rng,
-            mean=n_hat,
-            cov=hp.meas_normal_var / n_x_samples * jnp.eye(n_hat.size),
-            shape=(hp.n_meas_samples,),
-        )
-        normal_noise = normal_noise / jnp.maximum(
-            jnp.linalg.norm(normal_noise, axis=-1, keepdims=True), 1e-8
-        )  # Normalize noise to unit vectors
-        phi = jnp.linalg.norm(to_center) - params["radius"]  # Signed distance function
-        prob_0 = jax.nn.sigmoid(hp.meas_phi_alpha * jnp.square(phi))
-        contact_bool = jax.random.uniform(rng, shape=(hp.n_meas_samples,)) > prob_0
-        normal_sample = contact_bool[..., None] * normal_noise
+        to_center = x_curr - sensor_pos
+        n_hat = to_center / jnp.maximum(jnp.linalg.norm(to_center), 1e-8)
         ret[sensor_name] = {
-            "position": jnp.broadcast_to(sensor_pos, normal_sample.shape),
-            "contact_normal_W": normal_sample,
+            "position": sensor_pos[None, ...].repeat(hp.n_meas_samples, axis=0),
+            "contact_normal_W": jax.random.vonmises_fisher(
+                jax.random.key(0),
+                n_hat,
+                hp.meas_normal_kappa,
+                shape=(hp.n_meas_samples,),
+            ),
         }
     return ret
 
@@ -215,11 +245,46 @@ def test_expected_info_final():
     meas_final = jax.tree.map(lambda leaf: leaf[-1], env["measurements"])
     params_packed = jnp.array([params["radius"], x_final[0], x_final[1]])
 
-    # TODO: Sample Normals
+    def logpdf_meas_fn(params_packed, meas):
+        return logpdf_measurement(
+            {"radius": params_packed[0]}, params_packed[1:], meas, hp
+        )["bottom_left"]
 
-    # TODO: Compute expected value: avg(prob_contact) * expected_value_under_normal_mixture + (1-avg(p_contact)) * value_at_0_normal
+    meas_samples = _sample_normals(x_final, meas_final, hp)
+    zero_meas = jax.tree.map(jnp.zeros_like, meas_final)
+    for sensor_name in meas_final:
+        zero_meas[sensor_name]["position"] = meas_final[sensor_name]["position"]
 
-    # TODO: Test mean hessian vs mean grad squared
+    # Compute expected value: (p_nocontact) * value_at_0 + (1-p_nocontact) * expected_value_under_vmf
+    # NOTE: don't forget to square *then* take the mean
+    print("Calculating expected gradients and Hessians...", flush=True)
+    grad_logpdf = jax.grad(logpdf_meas_fn)
+    vmap_grad_logpdf = jax.vmap(grad_logpdf, in_axes=(None, 0))
+    hess_logpdf = jax.hessian(logpdf_meas_fn)
+    vmap_hess_logpdf = jax.vmap(hess_logpdf, in_axes=(None, 0))
+    prob_nocontact = p_nocontact(params, x_final, meas_final, hp)["bottom_left"]
+    grad_zero = grad_logpdf(params_packed, zero_meas)
+    grad_one = vmap_grad_logpdf(params_packed, meas_samples)
+    expected_grad = grad_zero * prob_nocontact + jnp.mean(grad_one, axis=0) * (
+        1 - prob_nocontact
+    )
+    expected_neg_hess = -1.0 * (
+        hess_logpdf(params_packed, zero_meas) * prob_nocontact
+        + jnp.mean(vmap_hess_logpdf(params_packed, meas_samples), axis=0)
+        * (1 - prob_nocontact)
+    )
+    expected_grad_sq = (
+        prob_nocontact * jnp.outer(grad_zero, grad_zero)
+        + (1 - prob_nocontact) * (grad_one.T @ grad_one) / hp.n_meas_samples
+    )
+
+    print("Expected gradient (should be near-0):", expected_grad)
+    print("Expected negative Hessian (know r-x a lot and z a little):\n", expected_neg_hess)
+    print("Expected squared gradient(know r-x a lot and z a little):\n", expected_grad_sq)
+    print("Asserting crude equality...", end="")
+    assert jnp.allclose(expected_grad, jnp.zeros_like(expected_grad), atol=1e-2, rtol=1e-2)
+    assert jnp.allclose(expected_neg_hess, expected_grad_sq, atol=1e0, rtol=1e0)
+    print("Success!")
 
 
 def test_plot_distributions():
@@ -247,12 +312,11 @@ def test_plot_distributions():
 
     # Reshape for plotting
     logpdf_dyn = logpdf_dyn.reshape(xx.shape)
-    logpdf_meas_normal = logpdf_meas["bottom_left"]["normal"].reshape(xx.shape)
-    logpdf_meas_contact = logpdf_meas["bottom_left"]["contact"].reshape(xx.shape)
+    logpdf_meas_bl = logpdf_meas["bottom_left"].reshape(xx.shape)
 
     # Plotting code
     plt.figure(figsize=(18, 5))
-    plt.subplot(1, 3, 1)
+    plt.subplot(1, 2, 1)
     plt.contourf(
         xx,
         yy,
@@ -262,33 +326,51 @@ def test_plot_distributions():
         cmap="viridis",
     )
     plt.colorbar(label="Log PDF Dynamics")
+    plt.scatter(
+        measurements["bottom_left"]["position"][..., 0],
+        measurements["bottom_left"]["position"][..., 1],
+        color="blue",
+        label="Sensors",
+    )
     plt.scatter(x_learned[:, 0], x_learned[:, 1], color="red", label="Learned States")
+    for idx in range(len(x_learned)):
+        circle = patches.Circle(
+            (x_learned[idx, 0], x_learned[idx, 1]),
+            params["radius"],
+            color="red",
+            fill=False,
+        )
+        plt.gca().add_patch(circle)
     plt.title("Dynamics Log PDF (Unnormalized)")
     plt.xlabel("x")
     plt.ylabel("y")
     plt.legend()
-    plt.subplot(1, 3, 2)
-    plt.contourf(xx, yy, logpdf_meas_normal, levels=50, cmap="viridis")
-    plt.colorbar(label="Log PDF Measurement")
-    plt.scatter(x_learned[:, 0], x_learned[:, 1], color="red", label="Learned States")
-    plt.title("Normal Measurement Log PDF")
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.legend()
-    plt.subplot(1, 3, 3)
+    plt.subplot(1, 2, 2)
     plt.contourf(
         xx,
         yy,
-        logpdf_meas_contact,
+        logpdf_meas_bl,
         levels=np.linspace(-100, 0.0, 50),
-        vmin=-100,
-        vmax=0,
-        cmap="viridis",
         extend="min",
+        cmap="viridis",
     )
     plt.colorbar(label="Log PDF Measurement")
+    plt.scatter(
+        measurements["bottom_left"]["position"][..., 0],
+        measurements["bottom_left"]["position"][..., 1],
+        color="blue",
+        label="Sensors",
+    )
     plt.scatter(x_learned[:, 0], x_learned[:, 1], color="red", label="Learned States")
-    plt.title("Contact Measurement Log PDF")
+    for idx in range(len(x_learned)):
+        circle = patches.Circle(
+            (x_learned[idx, 0], x_learned[idx, 1]),
+            params["radius"],
+            color="red",
+            fill=False,
+        )
+        plt.gca().add_patch(circle)
+    plt.title("Measurement Log PDF")
     plt.xlabel("x")
     plt.ylabel("y")
     plt.legend()
@@ -368,5 +450,4 @@ def test_logpdf_contact():
 
 
 if __name__ == "__main__":
-    test_plot_distributions()
-    test_logpdf_contact()
+    test_expected_info_final()
