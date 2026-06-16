@@ -342,18 +342,17 @@ def test_expected_info_tminus1():
         def loss(omega):
             x_next = jax.lax.select(link, omega[1][0], x_tp1)
             return logpdf_dynamics(omega[0], x_next, x_t, hp)
+
         return jax.grad(loss)(omega)
 
     _grad_dyn_partial = partial(_grad_dyn, omega=omega, hp=hp)
 
-    def _logmeas(pair, *, omega, hp):
-        m_t, x_t = pair
+    def _logmeas(m_t, x_t, *, omega, hp):
         return logpdf_measurement(omega[0], x_t, m_t, hp)
 
     _logmeas_partial = partial(_logmeas, omega=omega, hp=hp)
 
-    def _grad_meas(pair, *, omega, hp, link_to_terminal=False):
-        m_t, x_t = pair
+    def _grad_meas(m_t, x_t, *, omega, hp, link_to_terminal=False):
         link = jnp.asarray(link_to_terminal)
 
         def log_all(omega: Any) -> dict[str, dict[str, jax.Array]]:
@@ -409,7 +408,7 @@ def test_expected_info_tminus1():
     zero_meas = jax.tree.map(jnp.zeros_like, measurements)
     for sensor_name, sensor_measurement in measurements.items():
         zero_meas[sensor_name]["position"] = sensor_measurement["position"]
-    grads = grad_meas_wrt_params(
+    g_dyn_per_timestep = grad_meas_wrt_params(  # TODO: change this name
         omega,
         zero_meas,
         x_particles,
@@ -418,6 +417,44 @@ def test_expected_info_tminus1():
         _logmeas_partial,
         _grad_meas_partial,
     )
+    g_dyn_tminus1_packed = jnp.concatenate(
+        jax.tree.leaves(
+            jax.tree.map(
+                lambda leaf: leaf[-2].reshape(svgd_hp.n_particles, -1),
+                g_dyn_per_timestep,
+            )
+        ),
+        axis=-1,
+    )
+
+    ## Collect zero-measurement gradient at time T-1
+    zero_meas_tminus1 = jax.tree.map(lambda leaf: leaf[0], zero_meas)
+    logmeas_zero_tminus1 = jax.vmap(_logmeas_partial, in_axes=(None, 0))(
+        zero_meas_tminus1, x_particles[0]
+    )
+    gradmeas_zero_tminus1 = jax.vmap(_grad_meas_partial, in_axes=(None, 0))(
+        zero_meas_tminus1, x_particles[0]
+    )
+    gradmeas_zero_tminus1_packed = {
+        sensor_name: jnp.concatenate(
+            jax.tree.leaves(
+                jax.tree.map(
+                    lambda leaf: leaf.reshape(svgd_hp.n_particles, -1),
+                    gradmeas_zero_tminus1[sensor_name],
+                )
+            ),
+            axis=-1,
+        )
+        for sensor_name in gradmeas_zero_tminus1.keys()
+    }
+    grad_measzero_wrt_xfinal = {
+        sensor_name: (
+            jax.nn.softmax(logmeas_zero_tminus1[sensor_name])[None, ...]
+            @ (gradmeas_zero_tminus1_packed[sensor_name] + g_dyn_tminus1_packed)
+        ).squeeze(-2)
+        - jnp.mean(g_dyn_tminus1_packed, axis=0)
+        for sensor_name in gradmeas_zero_tminus1.keys()
+    }
     breakpoint()
 
 

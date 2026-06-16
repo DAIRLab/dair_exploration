@@ -367,21 +367,23 @@ def grad_meas_wrt_params(
             g_terminal_row,
         )
 
-    def meas_grad_at_t(t: ArrayLike) -> Any:
-        g_dyn_t = jax.tree.map(lambda leaf: leaf[jnp.int32(t)], g_by_timestep)
-        return _meas_grad_wrt_params_one_timestep(
-            jnp.int32(t),
-            measurements,
-            state_particles,
-            g_dyn_t,
-            logpdf_meas,
-            grad_logpdf_meas,
-            n_particles,
-            link_to_terminal=jnp.equal(jnp.int32(t), n_timesteps - 1),
-        )
+    return g_by_timestep
 
-    per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
-    return per_timestep
+    # def meas_grad_at_t(t: ArrayLike) -> Any:
+    #     g_dyn_t = jax.tree.map(lambda leaf: leaf[jnp.int32(t)], g_by_timestep)
+    #     return _meas_grad_wrt_params_one_timestep(
+    #         jnp.int32(t),
+    #         measurements,
+    #         state_particles,
+    #         g_dyn_t,
+    #         logpdf_meas,
+    #         grad_logpdf_meas,
+    #         n_particles,
+    #         link_to_terminal=jnp.equal(jnp.int32(t), n_timesteps - 1),
+    #     )
+
+    # per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
+    # return per_timestep
 
 
 def _make_state_dynamics_callables(
