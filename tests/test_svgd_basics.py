@@ -16,7 +16,7 @@ import matplotlib.patches as patches
 import scipy
 
 from dair_exploration.svgd_marginalization import (
-    grad_meas_wrt_params,
+    grad_dyn_wrt_params,
     sample_state_particles_svgd,
     SVGDHyperparameters,
 )
@@ -28,7 +28,7 @@ class TestSVGDHyperparameters:
     """Extra knobs for SVGD sampling + observed-info Monte Carlo size."""
 
     dyn_speed: float = 1.0
-    dyn_var: float = 0.01
+    dyn_var: float = 0.001
     dyn_penalty: float = 1000.0
 
     meas_normal_kappa: float = 15.0  # von Mises ~= Gaussian with variance 1/kappa
@@ -183,6 +183,7 @@ def logpdf_measurement(
 
 
 def _sample_normals(
+    rng: jax.Array,
     x_curr: jax.Array,
     measurements: dict[str, dict[str, jax.Array]],
     hp: TestSVGDHyperparameters,
@@ -190,8 +191,8 @@ def _sample_normals(
     """Sample normals from the measurement distribution.
 
     Args:
-        params: Parameters of the dynamics model.
-        x_curr: Current state.
+        rng: jax PRNG key
+        x_curr: Current state, shape (..., n_state)
         measurements: Dictionary of measurements
             ("object_name" -> ["position", "contact_normal"] (or 0 if not in contact))
         hp: Hyperparameters
@@ -205,18 +206,17 @@ def _sample_normals(
         to_center = x_curr - sensor_pos
         n_hat = to_center / jnp.maximum(jnp.linalg.norm(to_center), 1e-8)
         ret[sensor_name] = {
-            "position": sensor_pos[None, ...].repeat(hp.n_meas_samples, axis=0),
+            "position": jnp.broadcast_to(sensor_pos, x_curr.shape),
             "contact_normal_W": jax.random.vonmises_fisher(
-                jax.random.key(0),
+                rng,
                 n_hat,
                 hp.meas_normal_kappa,
-                shape=(hp.n_meas_samples,),
             ),
         }
     return ret
 
 
-def _create_env() -> dict[str, Any]:
+def _create_env_ground() -> dict[str, Any]:
     """Create a simple environment for testing."""
     params = {"radius": jnp.array(0.5)}
     x_learned = jnp.array([[0.0, 1.0], [0.0, 0.5]])
@@ -240,11 +240,35 @@ def _create_env() -> dict[str, Any]:
     }
     return {"params": params, "x_learned": x_learned, "measurements": measurements}
 
+def _create_env_air() -> dict[str, Any]:
+    """Create a simple environment for testing."""
+    params = {"radius": jnp.array(0.5)}
+    x_learned = jnp.array([[0.0, 2.0], [0.0, 1.0]])
+    measurements = {
+        "bottom_left": {
+            "position": jnp.array([[-0.5, 1.0], [-0.5, 1.0]]),
+            "contact_normal_W": jnp.array([[0.0, 0.0], [1.0, 0.0]]),
+        },
+        "bottom_right": {
+            "position": jnp.array([[0.5, 1.0], [0.5, 1.0]]),
+            "contact_normal_W": jnp.array([[0.0, 0.0], [-1.0, 0.0]]),
+        },
+        "top_left": {
+            "position": jnp.array([[-0.5, 2.0], [-0.5, 2.0]]),
+            "contact_normal_W": jnp.array([[1.0, 0.0], [0.0, 0.0]]),
+        },
+        "top_right": {
+            "position": jnp.array([[0.5, 2.0], [0.5, 2.0]]),
+            "contact_normal_W": jnp.array([[-1.0, 0.0], [0.0, 0.0]]),
+        },
+    }
+    return {"params": params, "x_learned": x_learned, "measurements": measurements}
+
 
 def test_expected_info_final():
     """Test the expected information computation at the final learned state."""
     hp = TestSVGDHyperparameters()
-    env = _create_env()
+    env = _create_env_ground()
     params = env["params"]
     x_final = env["x_learned"][-1]
     meas_final = jax.tree.map(lambda leaf: leaf[-1], env["measurements"])
@@ -255,7 +279,9 @@ def test_expected_info_final():
             {"radius": params_packed[0]}, params_packed[1:], meas, hp
         )["bottom_left"]
 
-    meas_samples = _sample_normals(x_final, meas_final, hp)
+    meas_samples = _sample_normals(jax.random.key(0),
+        x_final[None, ...].repeat(hp.n_meas_samples, axis=0), meas_final, hp
+    )
     zero_meas = jax.tree.map(jnp.zeros_like, meas_final)
     for sensor_name in meas_final:
         zero_meas[sensor_name]["position"] = meas_final[sensor_name]["position"]
@@ -312,13 +338,14 @@ def test_expected_info_final():
 
 def test_expected_info_tminus1():
     """Test the expected information from the measurements at time t-1 (top left)"""
+    rng_normal, rng_rand_idx, rng_sample_normals = jax.random.split(jax.random.key(0), 3)
     hp = TestSVGDHyperparameters()
-    env = _create_env()
+    env = _create_env_air()
     params = env["params"]
     x_learned = env["x_learned"]
     omega = (params, x_learned[-1:])
     x_grid = jnp.linspace(-2.0, 2.0, 1000)
-    y_grid = jnp.linspace(0.0, 2.0, 1000)
+    y_grid = jnp.linspace(jnp.min(x_learned[..., 1]) - params["radius"], jnp.max(x_learned[..., 1]) + params["radius"], 1000)
     xx, yy = jnp.meshgrid(x_grid, y_grid)
     grid_points = jnp.stack([xx.flatten(), yy.flatten()], axis=-1)
 
@@ -352,7 +379,7 @@ def test_expected_info_tminus1():
 
     _logmeas_partial = partial(_logmeas, omega=omega, hp=hp)
 
-    def _grad_meas(m_t, x_t, *, omega, hp, link_to_terminal=False):
+    def _grad_logmeas(m_t, x_t, *, omega, hp, link_to_terminal=False):
         link = jnp.asarray(link_to_terminal)
 
         def log_all(omega: Any) -> dict[str, dict[str, jax.Array]]:
@@ -361,16 +388,16 @@ def test_expected_info_tminus1():
 
         return jax.jacfwd(log_all)(omega)
 
-    _grad_meas_partial = partial(_grad_meas, omega=omega, hp=hp)
+    _grad_logmeas_partial = partial(_grad_logmeas, omega=omega, hp=hp)
 
     svgd_hp = SVGDHyperparameters(
-        n_particles=400, n_svgd_iters=400, svgd_step=1e-2, init_sample_std=5e-1
+        n_particles=2000, n_svgd_iters=2000, svgd_step=1e-3, init_sample_std=5e-1
     )
 
     x_particles = sample_state_particles_svgd(
         env["x_learned"][:-1],
         env["x_learned"][-1:],
-        jax.random.key(0),
+        rng_normal,
         svgd_hp,
         _logdyn_partial,
     )
@@ -403,19 +430,16 @@ def test_expected_info_tminus1():
     plt.legend()
     plt.show()
 
-    # TODO: Compute the measurement likelihood gradients for t=T-1
+    ## TODO: Compute the measurement likelihood gradients for t=T-1
     measurements = env["measurements"]
     zero_meas = jax.tree.map(jnp.zeros_like, measurements)
     for sensor_name, sensor_measurement in measurements.items():
         zero_meas[sensor_name]["position"] = sensor_measurement["position"]
-    g_dyn_per_timestep = grad_meas_wrt_params(  # TODO: change this name
+    g_dyn_per_timestep = grad_dyn_wrt_params(
         omega,
-        zero_meas,
         x_particles,
         _logdyn_partial,
         _grad_dyn_partial,
-        _logmeas_partial,
-        _grad_meas_partial,
     )
     g_dyn_tminus1_packed = jnp.concatenate(
         jax.tree.leaves(
@@ -427,41 +451,94 @@ def test_expected_info_tminus1():
         axis=-1,
     )
 
+    # Compute the gradient of the measurement likelihood with respect to the final state
+    def _grad_meas_wrt_xfinal(
+        m_t: Any, x_particles_t: jax.Array, g_dyn_t_packed: jax.Array
+    ) -> Any:
+        logmeas_t = jax.vmap(_logmeas_partial, in_axes=(None, 0))(m_t, x_particles_t)
+        gradmeas_t = jax.vmap(_grad_logmeas_partial, in_axes=(None, 0))(
+            m_t, x_particles_t
+        )
+        gradmeas_t_packed = jax.tree.map(
+            lambda leaf: jnp.concatenate(
+                jax.tree.leaves(
+                    jax.tree.map(
+                        lambda subleaf: subleaf.reshape(svgd_hp.n_particles, -1), leaf
+                    )
+                ),
+                axis=-1,
+            ),
+            gradmeas_t,
+            is_leaf=lambda leaf: jax.tree.structure(leaf) == jax.tree.structure(omega),
+        )
+        return {
+            sensor_name: (
+                jax.nn.softmax(logmeas_t[sensor_name])[None, ...]
+                @ (gradmeas_t_packed[sensor_name] + g_dyn_t_packed)
+            ).squeeze(-2)
+            - jnp.mean(g_dyn_t_packed, axis=0)
+            for sensor_name in logmeas_t.keys()
+        }
+
     ## Collect zero-measurement gradient at time T-1
     zero_meas_tminus1 = jax.tree.map(lambda leaf: leaf[0], zero_meas)
-    logmeas_zero_tminus1 = jax.vmap(_logmeas_partial, in_axes=(None, 0))(
-        zero_meas_tminus1, x_particles[0]
+    grad_measzero_wrt_xfinal = _grad_meas_wrt_xfinal(
+        zero_meas_tminus1, x_particles[0], g_dyn_tminus1_packed
     )
-    gradmeas_zero_tminus1 = jax.vmap(_grad_meas_partial, in_axes=(None, 0))(
-        zero_meas_tminus1, x_particles[0]
+
+    ## Sample normals from the vmf-mixture distribution
+    rand_idx = jax.random.randint(rng_rand_idx, (hp.n_meas_samples,), 0, x_particles[0].shape[0])
+    meas_samples = _sample_normals(rng_sample_normals, x_particles[0, rand_idx, :], zero_meas_tminus1, hp)
+
+    ## Collect one-measurement gradients at time T-1
+    grad_meassamples_wrt_xfinal = jax.vmap(
+        _grad_meas_wrt_xfinal, in_axes=(0, None, None)
+    )(meas_samples, x_particles[0], g_dyn_tminus1_packed)
+    grad_measone_wrt_xfinal = jax.tree.map(
+        lambda leaf: jnp.mean(leaf, axis=0), grad_meassamples_wrt_xfinal
     )
-    gradmeas_zero_tminus1_packed = {
-        sensor_name: jnp.concatenate(
-            jax.tree.leaves(
-                jax.tree.map(
-                    lambda leaf: leaf.reshape(svgd_hp.n_particles, -1),
-                    gradmeas_zero_tminus1[sensor_name],
-                )
-            ),
-            axis=-1,
-        )
-        for sensor_name in gradmeas_zero_tminus1.keys()
+
+    prob_nocontact = jax.vmap(p_nocontact, in_axes=(None, 0, None, None))(
+        params, x_particles[0], zero_meas_tminus1, hp
+    )
+
+    expected_grad_wrt_xfinal = jax.tree.map(
+        lambda pnc, gzero, gone: jnp.mean(pnc) * gzero + (1.0 - jnp.mean(pnc)) * gone,
+        prob_nocontact,
+        grad_measzero_wrt_xfinal,
+        grad_measone_wrt_xfinal,
+    )
+
+    gradsq_measzero_wrt_xfinal = jax.tree.map(
+        lambda leaf: jnp.outer(leaf, leaf), grad_measzero_wrt_xfinal
+    )
+    gradsq_measone_wrt_xfinal = jax.tree.map(
+        lambda leaf: (leaf.T @ leaf) / hp.n_meas_samples, grad_meassamples_wrt_xfinal
+    )
+
+    expected_gradsq_wrt_xfinal = jax.tree.map(
+        lambda pnc, gsqzero, gsqone: jnp.mean(pnc) * gsqzero
+        + (1.0 - jnp.mean(pnc)) * gsqone,
+        prob_nocontact,
+        gradsq_measzero_wrt_xfinal,
+        gradsq_measone_wrt_xfinal,
+    )
+
+    ## Let's say we observe only top-contact at T-1.
+    obs_gradsq_wrt_xfinal = {
+        "top_left": gradsq_measone_wrt_xfinal["top_left"],
+        "top_right": gradsq_measone_wrt_xfinal["top_right"],
+        "bottom_left": gradsq_measzero_wrt_xfinal["bottom_left"],
+        "bottom_right": gradsq_measzero_wrt_xfinal["bottom_right"],
     }
-    grad_measzero_wrt_xfinal = {
-        sensor_name: (
-            jax.nn.softmax(logmeas_zero_tminus1[sensor_name])[None, ...]
-            @ (gradmeas_zero_tminus1_packed[sensor_name] + g_dyn_tminus1_packed)
-        ).squeeze(-2)
-        - jnp.mean(g_dyn_tminus1_packed, axis=0)
-        for sensor_name in gradmeas_zero_tminus1.keys()
-    }
+
     breakpoint()
 
 
 def test_plot_distributions():
     """Test plotting the distributions."""
     hp = TestSVGDHyperparameters()
-    env = _create_env()
+    env = _create_env_ground()
     params = env["params"]
     x_learned = env["x_learned"]
     measurements = env["measurements"]

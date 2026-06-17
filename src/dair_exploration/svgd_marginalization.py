@@ -79,12 +79,13 @@ def unpack_particles(packed: jax.Array, template: Any) -> Any:
     )
 
 
+# TODO: Rename given Laplacian kernel
 def _pairwise_squared_and_bandwidth(x_packed: jax.Array) -> tuple[jax.Array, jax.Array]:
     """Pairwise squared L2 distances and bandwidth ``h^2`` (median heuristic)."""
     assert x_packed.shape[0] >= 2, "_rbf_kernel requires at least two particles"
 
     pairwise_l2_squared = jax.vmap(
-        lambda xi: jnp.sum(jnp.square(x_packed - jax.lax.stop_gradient(xi)), axis=-1)
+        lambda xi: jnp.sqrt(jnp.sum(jnp.square(x_packed - jax.lax.stop_gradient(xi)), axis=-1))
     )(x_packed)
 
     pairwise_dist = jax.lax.stop_gradient(jnp.sqrt(pairwise_l2_squared))
@@ -93,7 +94,7 @@ def _pairwise_squared_and_bandwidth(x_packed: jax.Array) -> tuple[jax.Array, jax
     d_med = jnp.median(pairwise_dist[iu, ju])
     log_n = jnp.log(jnp.asarray(n, dtype=x_packed.dtype))
     h_sq = jnp.maximum(
-        jnp.square(d_med) / log_n,
+        d_med / log_n,
         jnp.asarray(1e-8, dtype=x_packed.dtype),
     )
     return pairwise_l2_squared, h_sq
@@ -108,7 +109,7 @@ def _rbf_kernel_position_grads(
     def kernel_grad_row(i: ArrayLike) -> jax.Array:
         def k_ij(j: ArrayLike) -> jax.Array:
             diff = x_packed[j] - x_packed[i]
-            return 2.0 * kmat[j, i] * diff / h_sq
+            return kmat[j, i] * diff / h_sq
 
         return jax.vmap(k_ij)(jnp.arange(ni)).sum(axis=0)
 
@@ -155,7 +156,7 @@ def _svgd_step(
 
     grad_log_p = jax.vmap(grad_log_p_row)(x_packed)
     pairwise_l2_squared, h_sq = _pairwise_squared_and_bandwidth(x_packed)
-    kernels = jnp.exp(-pairwise_l2_squared / (jax.lax.stop_gradient(h_sq)))
+    kernels = jnp.exp(-pairwise_l2_squared / (2.0 * jax.lax.stop_gradient(h_sq)))
     kernel_summands = _rbf_kernel_position_grads(
         kernels, x_packed, jax.lax.stop_gradient(h_sq)
     )
@@ -297,36 +298,30 @@ def _meas_grad_wrt_params_one_timestep(
     return jax.tree.map(marginalize_leaf, log_by_particle, grad_by_particle)
 
 
-def grad_meas_wrt_params(
+def grad_dyn_wrt_params(
     params: Any,
-    measurements: Any,
     state_particles: Any,
     logpdf_dynamics: Callable[[Any], jax.Array],
     grad_logpdf_dynamics: Callable[[Any], Any],
-    logpdf_meas: Callable[[Any], jax.Array],
-    grad_logpdf_meas: Callable[[Any], Any],
 ) -> Any:
     """
-    Per-timestep ``∇_ω log p_θ(m_t | x_T)`` via Eqs. 11–12, with ``∇_ω log p_θ(x_{t,i} | x_T)``
-    from the backward recursion in Eqs. 13–16.
+    Per-timestep/per-particle gradients of the dynamics log-probability w.r.t. the model parameters.
 
-    Dynamics callables take ``(x_t, x_{t+1})``; measurement callables take ``(m_t, x_t)``.
+    ``∇_ω log p_θ(x_{t,i} | x_T)`` from the backward recursion in Eqs. 13–16.
+
+    Dynamics callables take ``(x_t, x_{t+1})``.
     All ``grad_*`` callables return a PyTree with the same structure as ``params``.
     Use :func:`functools.partial` at the call site to bind hyperparameters or ``params``.
 
     Args:
         params: Model parameters (PyTree).
-        measurements: Each leaf has shape ``(n_timesteps, n_measurements)``.
         state_particles: Each leaf has shape ``(n_timesteps, n_particles, *)``.
-        logpdf_dynamics: ``log p_θ(x_t | x_{t+1})`` (proportional to ``f_θ``).
-        grad_logpdf_dynamics: ``∇_ω`` of the dynamics term w.r.t. ``params``.
-        logpdf_meas: PyTree of scalar ``log p(m_{t,k} | x_t)`` terms (any structure).
-        grad_logpdf_meas: Same PyTree; each leaf is a ``params`` PyTree with per-particle
-            leading axis ``(n_particles,)``.
+        logpdf_dynamics: ``f_θ`` (proportional to ``log p_θ(x_t | x_{t+1})``).
+        grad_logpdf_dynamics: ``∇_ω`` of the above w.r.t. ``params``.
 
     Returns:
-        PyTree matching ``logpdf_meas``; each leaf is a ``params`` PyTree whose array
-        leaves have shape ``(n_timesteps, *param_shape)``.
+        PyTree matching ``state_particles``; each leaf is a ``params`` PyTree whose array
+        leaves have shape ``(n_timesteps, n_particles, *param_shape)``.
     """
     n_particles = jax.tree.leaves(state_particles)[0].shape[1]
     n_timesteps = jax.tree.leaves(state_particles)[0].shape[0]
@@ -368,23 +363,6 @@ def grad_meas_wrt_params(
         )
 
     return g_by_timestep
-
-    # def meas_grad_at_t(t: ArrayLike) -> Any:
-    #     g_dyn_t = jax.tree.map(lambda leaf: leaf[jnp.int32(t)], g_by_timestep)
-    #     return _meas_grad_wrt_params_one_timestep(
-    #         jnp.int32(t),
-    #         measurements,
-    #         state_particles,
-    #         g_dyn_t,
-    #         logpdf_meas,
-    #         grad_logpdf_meas,
-    #         n_particles,
-    #         link_to_terminal=jnp.equal(jnp.int32(t), n_timesteps - 1),
-    #     )
-
-    # per_timestep = jax.vmap(meas_grad_at_t)(jnp.arange(n_timesteps))
-    # return per_timestep
-
 
 def _make_state_dynamics_callables(
     logpdf_dynamics: Callable[[Any], jax.Array],
