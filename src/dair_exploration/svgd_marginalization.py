@@ -85,7 +85,7 @@ def _pairwise_squared_and_bandwidth(x_packed: jax.Array) -> tuple[jax.Array, jax
     assert x_packed.shape[0] >= 2, "_rbf_kernel requires at least two particles"
 
     pairwise_l2_squared = jax.vmap(
-        lambda xi: jnp.sqrt(jnp.sum(jnp.square(x_packed - jax.lax.stop_gradient(xi)), axis=-1))
+        lambda xi: jnp.sum(jnp.square(x_packed - jax.lax.stop_gradient(xi)), axis=-1)
     )(x_packed)
 
     pairwise_dist = jax.lax.stop_gradient(jnp.sqrt(pairwise_l2_squared))
@@ -94,7 +94,7 @@ def _pairwise_squared_and_bandwidth(x_packed: jax.Array) -> tuple[jax.Array, jax
     d_med = jnp.median(pairwise_dist[iu, ju])
     log_n = jnp.log(jnp.asarray(n, dtype=x_packed.dtype))
     h_sq = jnp.maximum(
-        d_med / log_n,
+        jnp.square(d_med) / log_n,
         jnp.asarray(1e-8, dtype=x_packed.dtype),
     )
     return pairwise_l2_squared, h_sq
@@ -553,4 +553,5 @@ def observed_info_svgd(
 
 # Public alias
 svgd_step = _svgd_step
+jit_sample_state_particles_svgd = jax.jit(_sample_state_particles_svgd, static_argnums=(3, 4))
 sample_state_particles_svgd = _sample_state_particles_svgd

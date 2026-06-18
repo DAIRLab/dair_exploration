@@ -28,13 +28,13 @@ class TestSVGDHyperparameters:
     """Extra knobs for SVGD sampling + observed-info Monte Carlo size."""
 
     dyn_speed: float = 1.0
-    dyn_var: float = 0.001
+    dyn_var: float = 1e-4
     dyn_penalty: float = 1000.0
 
     meas_normal_kappa: float = 15.0  # von Mises ~= Gaussian with variance 1/kappa
-    meas_phi_prob1at0: float = 0.7
+    meas_phi_prob1at0: float = 0.8
     meas_phi_prob1at_nominal: float = 0.05
-    meas_phi_nominal: float = 0.01
+    meas_phi_nominal: float = 0.05
 
     n_meas_samples: int = 10000
 
@@ -46,7 +46,7 @@ def logpdf_dynamics(
     x_curr: jax.Array,
     hp: TestSVGDHyperparameters,
 ) -> jax.Array:
-    """Log probability density function of the dynamics.
+    """Log probability density function of the (backwards) dynamics p(x_curr|x_next, params).
     Use ContactNets, min_{lamb>0} (z_final - (z_curr - SPEED + lamb))^2 + lamb*xt
     Args:
         params: Parameters of the dynamics model.
@@ -71,6 +71,25 @@ def logpdf_dynamics(
     ) - hp.dyn_penalty * (
         jnp.abs(jnp.minimum(z_curr - radius, 0.0))
         + jnp.abs(jnp.minimum(x_next[..., 1] - radius, 0.0))
+    )
+
+@partial(jax.jit, static_argnames=["hp"])
+def logpdf_prior(
+    omega: tuple[Any, Any],
+    hp: TestSVGDHyperparameters,
+) -> jax.Array:
+    """Log prior probability on the params.
+    Args:
+        params: Parameters of the dynamics model.
+        hp: Hyperparameters
+    Returns:
+        Log probability density of the parameters.
+    """
+    params = omega[0]
+    radius = params["radius"]
+    x_final = omega[1]
+    return -hp.dyn_penalty * (
+        jnp.abs(jnp.minimum(x_final[..., 1] - radius, 0.0))
     )
 
 
@@ -268,7 +287,7 @@ def _create_env_air() -> dict[str, Any]:
 def test_expected_info_final():
     """Test the expected information computation at the final learned state."""
     hp = TestSVGDHyperparameters()
-    env = _create_env_ground()
+    env = _create_env_air()
     params = env["params"]
     x_final = env["x_learned"][-1]
     meas_final = jax.tree.map(lambda leaf: leaf[-1], env["measurements"])
@@ -336,9 +355,15 @@ def test_expected_info_final():
     # NOTE: observed info has high variance, especially for the gradient squared
 
 
+def test_gradients():
+    """Test grad log p(m_t|x_T) against fininte differences"""
+
+    env_ground = _create_env_ground()
+    
+
 def test_expected_info_tminus1():
     """Test the expected information from the measurements at time t-1 (top left)"""
-    rng_normal, rng_rand_idx, rng_sample_normals = jax.random.split(jax.random.key(0), 3)
+    rng_normal, rng_rand_idx, rng_sample_normals = jax.random.split(jax.random.key(1), 3)
     hp = TestSVGDHyperparameters()
     env = _create_env_air()
     params = env["params"]
@@ -391,7 +416,7 @@ def test_expected_info_tminus1():
     _grad_logmeas_partial = partial(_grad_logmeas, omega=omega, hp=hp)
 
     svgd_hp = SVGDHyperparameters(
-        n_particles=2000, n_svgd_iters=2000, svgd_step=1e-3, init_sample_std=5e-1
+        n_particles=1000, n_svgd_iters=2000, svgd_step=2e-4, init_sample_std=5e-1
     )
 
     x_particles = sample_state_particles_svgd(
@@ -479,6 +504,7 @@ def test_expected_info_tminus1():
             - jnp.mean(g_dyn_t_packed, axis=0)
             for sensor_name in logmeas_t.keys()
         }
+        
 
     ## Collect zero-measurement gradient at time T-1
     zero_meas_tminus1 = jax.tree.map(lambda leaf: leaf[0], zero_meas)
@@ -523,6 +549,7 @@ def test_expected_info_tminus1():
         gradsq_measzero_wrt_xfinal,
         gradsq_measone_wrt_xfinal,
     )
+    print("Expected gradient squared wrt x_final (top_left):", expected_gradsq_wrt_xfinal["top_left"])
 
     ## Let's say we observe only top-contact at T-1.
     obs_gradsq_wrt_xfinal = {
@@ -532,6 +559,35 @@ def test_expected_info_tminus1():
         "bottom_right": gradsq_measzero_wrt_xfinal["bottom_right"],
     }
 
+    # Compute log measurement likelihoods with fit
+    print("Computing log measurement likelihoods with fit...", flush=True)
+    x_final = x_learned[-1:]
+    x_vals = jnp.linspace(-0.1, 0.1, 21)
+    out_top_lefts = []
+    for x_val in x_vals:
+        print("x_val:", x_val)
+        x_final_val = x_final.at[0, 0].set(x_val)
+        x_part_val = sample_state_particles_svgd(
+            env["x_learned"][:-1],
+            x_final_val,
+            rng_normal,
+            svgd_hp,
+            _logdyn_partial,
+        )
+        logmeaszero_wrt_final = jax.tree.map(jax.nn.logsumexp, jax.vmap(_logmeas_partial, in_axes=(None, 0))(zero_meas_tminus1, x_part_val[0]))
+        logmeasone_wrt_final = jax.tree.map(lambda leaf: jnp.mean(jax.nn.logsumexp(leaf, axis=-1), axis=0), jax.vmap(jax.vmap(_logmeas_partial, in_axes=(None, 0)), in_axes=(0, None))(meas_samples, x_part_val[0]))
+
+        expected_logmeas_wrt_final = jax.tree.map(
+            lambda pnc, gzero, gone: jnp.nan_to_num(jnp.mean(pnc) * gzero + (1.0 - jnp.mean(pnc)) * gone),
+            prob_nocontact,
+            logmeaszero_wrt_final,
+            logmeasone_wrt_final,
+        )
+        out_top_lefts.append(expected_logmeas_wrt_final["top_left"])
+        print("expected_logmeas_wrt_final:", expected_logmeas_wrt_final)
+    print("out_top_lefts:", out_top_lefts)
+    exp_neg_hessian_x = -2.0 * jnp.polyfit(x_vals, jnp.stack(out_top_lefts), deg=2)[0]
+    print("Empirical expected negative Hessian wrt x (top_left):", exp_neg_hessian_x)
     breakpoint()
 
 
@@ -698,4 +754,6 @@ def test_logpdf_contact():
 
 
 if __name__ == "__main__":
+    # test_plot_distributions()
+    # test_expected_info_final()
     test_expected_info_tminus1()
